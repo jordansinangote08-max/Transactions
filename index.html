@@ -172,7 +172,7 @@ Safer before next billing statement.
 
 <script>
 const WEB_APP_URL =
-"https://script.google.com/macros/library/d/1gfuYmN3lnfrQzY3emAF4JggeXsRw6K8aOtOKlmM4jcNpMvfXAOjOAtM2/20";
+"https://script.google.com/macros/s/AKfycbyndwZXzpAAx2voFy8yvQEjr-0DC7NzP8RocThd76Qbyd-qx_lEneheHBYA7AeMbMQL/exec";
 
 let selected='UB';
 
@@ -293,7 +293,7 @@ localStorage.setItem('smartLogs',JSON.stringify(logs));
 fetch(WEB_APP_URL,{
 method:"POST",
 mode:"no-cors",
-body:JSON.stringify({
+body:new URLSearchParams({
 amount:amount,
 card:selected,
 note:note,
