@@ -1,0 +1,757 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<title>Smart Card Advisor</title>
+
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700;800&family=Playfair+Display:wght@700&display=swap" rel="stylesheet">
+
+<style>
+
+*{
+margin:0;
+padding:0;
+box-sizing:border-box;
+}
+
+html{
+font-size:16px;
+}
+
+body{
+font-family:'DM Sans',sans-serif;
+background:linear-gradient(180deg,#fbfaf7,#f6f2eb);
+color:#1f2430;
+min-height:100vh;
+padding:20px 14px 50px;
+}
+
+.container{
+width:100%;
+max-width:520px;
+margin:auto;
+}
+
+.panel{
+background:white;
+border:1px solid #e8dfd4;
+border-radius:24px;
+padding:18px;
+margin-bottom:14px;
+box-shadow:0 6px 20px rgba(0,0,0,.04);
+}
+
+.small{
+font-size:10px;
+font-weight:800;
+letter-spacing:.14em;
+text-transform:uppercase;
+color:#9d8d7d;
+margin-bottom:6px;
+}
+
+h1{
+font-family:'Playfair Display',serif;
+font-size:clamp(28px,6vw,36px);
+line-height:1;
+margin-bottom:8px;
+}
+
+.subtitle{
+font-size:13px;
+line-height:1.6;
+color:#858995;
+margin-bottom:18px;
+}
+
+.label{
+display:block;
+font-size:10px;
+font-weight:800;
+letter-spacing:.14em;
+text-transform:uppercase;
+color:#9d8d7d;
+margin-bottom:8px;
+}
+
+input{
+width:100%;
+border:1px solid #ece2d6;
+background:#fbfaf7;
+border-radius:14px;
+padding:14px;
+font-size:14px;
+outline:none;
+}
+
+.amount-wrap{
+display:flex;
+justify-content:center;
+align-items:center;
+gap:4px;
+padding-bottom:16px;
+border-bottom:1px solid #ece2d6;
+margin-bottom:14px;
+}
+
+.currency{
+font-family:'Playfair Display',serif;
+font-size:34px;
+color:#c7b7a4;
+}
+
+.amount{
+border:none;
+background:none;
+font-family:'Playfair Display',serif;
+font-size:clamp(34px,8vw,46px);
+text-align:center;
+width:100%;
+max-width:240px;
+}
+
+.selector{
+display:grid;
+grid-template-columns:1fr 1fr;
+gap:10px;
+margin-bottom:14px;
+}
+
+.select{
+border:1px solid #ece2d6;
+border-radius:16px;
+padding:14px;
+background:#fbfaf7;
+font-weight:800;
+cursor:pointer;
+transition:.2s;
+}
+
+.select.active{
+background:#1f2430;
+color:white;
+}
+
+.select small{
+display:block;
+font-size:10px;
+margin-top:2px;
+opacity:.8;
+}
+
+.save{
+width:100%;
+border:none;
+border-radius:16px;
+padding:15px;
+background:#1f2430;
+color:white;
+font-weight:800;
+letter-spacing:.08em;
+text-transform:uppercase;
+cursor:pointer;
+transition:.2s;
+}
+
+.save:hover{
+transform:translateY(-1px);
+}
+
+.recommend{
+display:flex;
+justify-content:space-between;
+align-items:center;
+gap:16px;
+}
+
+.badge{
+display:inline-block;
+padding:6px 10px;
+border-radius:999px;
+background:#edf8f1;
+color:#2d7a57;
+font-size:11px;
+font-weight:800;
+margin-bottom:10px;
+}
+
+.bank{
+font-size:clamp(22px,5vw,28px);
+font-weight:800;
+line-height:1;
+}
+
+.last{
+font-size:13px;
+color:#8a8f98;
+margin-left:6px;
+}
+
+.reason{
+font-size:12px;
+line-height:1.5;
+color:#858995;
+margin-top:8px;
+}
+
+.days{
+text-align:right;
+}
+
+.days strong{
+display:block;
+font-family:'Playfair Display',serif;
+font-size:clamp(28px,7vw,34px);
+}
+
+.days span{
+font-size:11px;
+color:#8a8f98;
+}
+
+.grid{
+display:grid;
+grid-template-columns:1fr 1fr;
+gap:10px;
+margin-top:16px;
+}
+
+.card{
+border:1px solid #ece2d6;
+border-radius:18px;
+padding:15px;
+}
+
+.good{
+background:#edf8f1;
+}
+
+.bad{
+background:#fdeceb;
+}
+
+.card h3{
+font-size:15px;
+margin-bottom:2px;
+}
+
+.meta{
+font-size:11px;
+font-weight:700;
+color:#8a8f98;
+}
+
+.row{
+display:flex;
+justify-content:space-between;
+padding-top:10px;
+margin-top:10px;
+border-top:1px solid rgba(0,0,0,.06);
+font-size:11px;
+color:#8a8f98;
+}
+
+.row strong{
+font-size:12px;
+color:#1f2430;
+}
+
+.log{
+display:flex;
+justify-content:space-between;
+align-items:center;
+gap:12px;
+background:white;
+border:1px solid #ece2d6;
+border-radius:15px;
+padding:13px;
+margin-bottom:8px;
+}
+
+.log-title{
+font-weight:800;
+margin-bottom:3px;
+}
+
+.log-meta{
+font-size:11px;
+color:#858995;
+line-height:1.5;
+}
+
+.delete{
+border:none;
+background:none;
+font-size:22px;
+color:#b8aa9c;
+cursor:pointer;
+}
+
+.empty{
+text-align:center;
+padding:24px 0;
+color:#b8aa9c;
+font-size:13px;
+}
+
+@media(max-width:768px){
+
+.recommend{
+flex-direction:column;
+align-items:flex-start;
+}
+
+.days{
+text-align:left;
+}
+}
+
+@media(max-width:520px){
+
+.grid,
+.selector{
+grid-template-columns:1fr;
+}
+
+.panel{
+padding:16px;
+}
+}
+
+</style>
+</head>
+
+<body>
+
+<div class="container">
+
+<div class="small">Spend Smart</div>
+
+<h1>Card Advisor</h1>
+
+<div class="subtitle">
+Know which card is safer before your billing statement and salary cycle.
+</div>
+
+<div class="panel">
+
+<label class="label">Transaction Date</label>
+
+<input type="date" id="date">
+
+</div>
+
+<div class="panel">
+
+<label class="label" style="text-align:center">
+Amount
+</label>
+
+<div class="amount-wrap">
+<span class="currency">₱</span>
+
+<input
+class="amount"
+type="number"
+id="amount"
+placeholder="0.00"
+>
+</div>
+
+<label class="label">
+Card to use
+</label>
+
+<div class="selector">
+
+<button id="ewBtn" class="select">
+EastWest
+<small>•••• 3002</small>
+</button>
+
+<button id="ubBtn" class="select">
+UnionBank
+<small>•••• 6023</small>
+</button>
+
+</div>
+
+<label class="label">
+Note
+</label>
+
+<input
+type="text"
+id="note"
+placeholder="Food, groceries, bills, etc."
+>
+
+<br><br>
+
+<button class="save" onclick="saveLog()">
+Save Transaction
+</button>
+
+</div>
+
+<div class="panel">
+
+<div class="recommend">
+
+<div>
+
+<div class="badge">
+✅ Recommended
+</div>
+
+<div id="winner" class="bank">
+UnionBank
+<span class="last">•••• 6023</span>
+</div>
+
+<div id="reason" class="reason">
+Safer before next billing statement.
+</div>
+
+</div>
+
+<div class="days">
+<strong id="days">25d</strong>
+<span id="due">Jul 25 due</span>
+</div>
+
+</div>
+
+<div class="grid">
+
+<div id="ewCard" class="card">
+
+<h3>EastWest</h3>
+
+<div class="meta">
+•••• 3002
+</div>
+
+<div class="row">
+<span>Statement</span>
+<strong>Every 21st</strong>
+</div>
+
+<div class="row">
+<span>Safe Window</span>
+<strong>22 → 10</strong>
+</div>
+
+<div class="row">
+<span>Status</span>
+<strong id="ewStatus">Safe</strong>
+</div>
+
+</div>
+
+<div id="ubCard" class="card">
+
+<h3>UnionBank</h3>
+
+<div class="meta">
+•••• 6023
+</div>
+
+<div class="row">
+<span>Statement</span>
+<strong>Every 10th</strong>
+</div>
+
+<div class="row">
+<span>Safe Window</span>
+<strong>11 → End</strong>
+</div>
+
+<div class="row">
+<span>Status</span>
+<strong id="ubStatus">Safe</strong>
+</div>
+
+</div>
+
+</div>
+
+</div>
+
+<div id="logs"></div>
+
+</div>
+
+<script>
+
+const WEB_APP_URL =
+"https://script.google.com/macros/s/AKfycbw_foY4g42ijckB1pQAtcOvQQDf4VqxCEDcr1YnKRAyPG7a7hOTnnmhXYA5k0sTV3x8/exec";
+
+let selected='UB';
+
+let logs=JSON.parse(
+localStorage.getItem('smartLogs') || '[]'
+);
+
+function addMonths(date,months){
+const d=new Date(date);
+d.setMonth(d.getMonth()+months);
+return d;
+}
+
+function parseDate(v){
+const [y,m,d]=v.split('-').map(Number);
+return new Date(y,m-1,d);
+}
+
+function fmt(date){
+return date.toLocaleDateString('en-PH',{
+month:'short',
+day:'numeric'
+});
+}
+
+function calcEW(date){
+
+const target=addMonths(
+date,
+date.getDate()<=21 ? 1 : 2
+);
+
+return new Date(
+target.getFullYear(),
+target.getMonth(),
+15
+);
+}
+
+function calcUB(date){
+
+const target=
+date.getDate()<=10
+? date
+: addMonths(date,1);
+
+return new Date(
+target.getFullYear(),
+target.getMonth(),
+25
+);
+}
+
+function daysUntil(due,from){
+return Math.ceil((due-from)/86400000);
+}
+
+function update(){
+
+const value=document.getElementById('date').value;
+
+if(!value)return;
+
+const date=parseDate(value);
+
+const ewSafe=
+date.getDate()>=22 ||
+date.getDate()<=10;
+
+const ubSafe=
+date.getDate()>=11;
+
+const ewDue=calcEW(date);
+const ubDue=calcUB(date);
+
+const ewDays=daysUntil(ewDue,date);
+const ubDays=daysUntil(ubDue,date);
+
+let winner='UB';
+
+if(ewSafe && !ubSafe){
+winner='EW';
+}
+else if(ewSafe && ubSafe){
+winner=ewDays>=ubDays ? 'EW' : 'UB';
+}
+
+selected=winner;
+
+document.getElementById('ewBtn').className=
+winner==='EW'
+? 'select active'
+: 'select';
+
+document.getElementById('ubBtn').className=
+winner==='UB'
+? 'select active'
+: 'select';
+
+document.getElementById('ewStatus').textContent=
+ewSafe ? 'Safe' : 'Avoid';
+
+document.getElementById('ubStatus').textContent=
+ubSafe ? 'Safe' : 'Avoid';
+
+document.getElementById('ewCard').className=
+ewSafe ? 'card good' : 'card bad';
+
+document.getElementById('ubCard').className=
+ubSafe ? 'card good' : 'card bad';
+
+const due=
+winner==='EW'
+? ewDue
+: ubDue;
+
+const days=
+winner==='EW'
+? ewDays
+: ubDays;
+
+document.getElementById('winner').innerHTML=
+winner==='EW'
+? 'EastWest <span class="last">•••• 3002</span>'
+: 'UnionBank <span class="last">•••• 6023</span>';
+
+document.getElementById('days').textContent=
+days+'d';
+
+document.getElementById('due').textContent=
+fmt(due)+' due';
+
+document.getElementById('reason').textContent=
+winner==='EW'
+? 'EastWest is currently safer before cutoff.'
+: 'UnionBank is currently safer before cutoff.';
+}
+
+document.getElementById('ewBtn').onclick=()=>{
+selected='EW';
+
+document.getElementById('ewBtn').className='select active';
+document.getElementById('ubBtn').className='select';
+};
+
+document.getElementById('ubBtn').onclick=()=>{
+selected='UB';
+
+document.getElementById('ubBtn').className='select active';
+document.getElementById('ewBtn').className='select';
+};
+
+function saveLog(){
+
+const amount=document.getElementById('amount').value;
+
+if(!amount)return;
+
+const note =
+document.getElementById('note').value || selected;
+
+const date =
+document.getElementById('date').value;
+
+logs.unshift({
+id:Date.now(),
+amount,
+note,
+date,
+card:selected
+});
+
+localStorage.setItem(
+'smartLogs',
+JSON.stringify(logs)
+);
+
+fetch(WEB_APP_URL,{
+method:"POST",
+mode:"no-cors",
+body:JSON.stringify({
+amount:amount,
+card:selected,
+note:note,
+date:date
+})
+});
+
+document.getElementById('amount').value='';
+document.getElementById('note').value='';
+
+renderLogs();
+}
+
+function renderLogs(){
+
+const el=document.getElementById('logs');
+
+if(!logs.length){
+
+el.innerHTML=
+'<div class="empty">No transactions yet.</div>';
+
+return;
+}
+
+el.innerHTML=logs.map(log=>`
+
+<div class="log">
+
+<div>
+
+<div class="log-title">
+${log.note}
+</div>
+
+<div class="log-meta">
+₱${Number(log.amount).toLocaleString(
+'en-PH',
+{minimumFractionDigits:2}
+)}
+ · ${log.card}
+ · ${log.date}
+</div>
+
+</div>
+
+<button
+class="delete"
+onclick="removeLog(${log.id})"
+>
+×
+</button>
+
+</div>
+
+`).join('');
+}
+
+function removeLog(id){
+
+logs=logs.filter(l=>l.id!==id);
+
+localStorage.setItem(
+'smartLogs',
+JSON.stringify(logs)
+);
+
+renderLogs();
+}
+
+const today=new Date();
+
+document.getElementById('date').value=
+today.toISOString().split('T')[0];
+
+update();
+renderLogs();
+
+document
+.getElementById('date')
+.addEventListener('change',update);
+
+</script>
+
+</body>
+</html>
