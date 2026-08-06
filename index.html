@@ -699,11 +699,24 @@
       const details=Object.fromEntries(
         Object.entries(results).map(([card,result])=>{
           const salaryDates=salaryDatesBetween(date,result.due);
-          return [card,{...result,days:daysUntil(result.due,date),salaryDates,salarySafe:salaryDates.length>0}];
+          const daysToStatement=daysUntil(result.statement,date);
+          const nearStatement=daysToStatement>=0 && daysToStatement<=7;
+          return [card,{
+            ...result,
+            days:daysUntil(result.due,date),
+            daysToStatement,
+            nearStatement,
+            salaryDates,
+            salarySafe:salaryDates.length>0
+          }];
         })
       );
 
-      const eligibleCards=Object.keys(details).filter(card=>details[card].salarySafe);
+      // A card is eligible only when a salary arrives before payment is needed
+      // and the purchase is more than 7 days away from its upcoming statement.
+      const eligibleCards=Object.keys(details).filter(
+        card=>details[card].salarySafe && !details[card].nearStatement
+      );
       const winner=eligibleCards.length
         ? eligibleCards.reduce((best,card)=>details[card].days>details[best].days?card:best)
         : null;
@@ -719,6 +732,9 @@
         if(card===winner){
           box.className="bank-card eligible";
           status.textContent="Recommended · Salary covered";
+        }else if(item.nearStatement){
+          box.className="bank-card ineligible";
+          status.textContent=`Not safe · ${item.daysToStatement}d to statement`;
         }else if(item.salarySafe){
           box.className="bank-card";
           status.textContent="Safe · Salary covered";
@@ -736,7 +752,7 @@
         el.winner.innerHTML=`${names[winner]} <span class="last">•••• ${endings[winner]}</span>`;
         el.days.textContent="Safe";
         el.due.textContent="Salary covered";
-        el.reason.textContent="Recommended because at least one salary date arrives before payment is needed.";
+        el.reason.textContent="Recommended because a salary arrives before payment is needed and the purchase is more than 7 days before the statement date.";
       }else{
         selected="";
         el.ewChoice.checked=false;
@@ -745,7 +761,7 @@
         el.winner.textContent="No safe card";
         el.days.textContent="Wait";
         el.due.textContent="No salary before payment";
-        el.reason.textContent="None of the cards has a salary date inside its current safe payment window.";
+        el.reason.textContent="No card meets both rules: salary must arrive before payment is needed, and the purchase must be more than 7 days before the statement date.";
       }
     }
 
