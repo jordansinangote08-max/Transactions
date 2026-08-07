@@ -158,11 +158,11 @@
       .days strong{font-size:clamp(1.45rem,6vw,1.9rem)}
       .cards-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
       .fab{right:max(18px,env(safe-area-inset-right));bottom:calc(86px + env(safe-area-inset-bottom));width:58px;height:58px}
-      .bottom-nav{display:grid;grid-template-columns:repeat(4,1fr);position:fixed;left:0;right:0;bottom:0;z-index:45;padding:8px max(10px,env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) max(10px,env(safe-area-inset-left));background:color-mix(in srgb,var(--surface) 94%,transparent);border-top:1px solid var(--divider);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px)}
+      .bottom-nav{display:grid;grid-template-columns:repeat(3,1fr);position:fixed;left:0;right:0;bottom:0;z-index:45;padding:8px max(10px,env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) max(10px,env(safe-area-inset-left));background:color-mix(in srgb,var(--surface) 94%,transparent);border-top:1px solid var(--divider);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px)}
       .nav-item{display:grid;justify-items:center;gap:2px;min-height:52px;padding:5px 4px;color:var(--muted);text-decoration:none;font-size:.72rem;font-weight:700;border-radius:var(--radius-md)}
       .nav-item svg{width:22px;height:22px}
       .nav-item.is-active,.nav-item:hover{color:var(--primary);background:var(--primary-soft)}
-      #overview,#cards,#history{scroll-margin-top:145px}
+      #overview,#cards{scroll-margin-top:145px}
       .modal{align-items:end;padding:0}
       .modal-panel{width:100%;max-height:92dvh;border-radius:24px 24px 0 0;padding:22px 20px calc(22px + env(safe-area-inset-bottom))}
       .section-heading{align-items:flex-start;flex-direction:column}
@@ -465,17 +465,10 @@
         </section>
       </section>
 
-      <section class="card" id="history">
-        <div class="section-heading">
-          <div>
-            <h2>Transaction history</h2>
-            <p>Newest first. Use the pencil to edit or the trash can to delete.</p>
-          </div>
-          <button class="btn btn-danger" id="clearHistory" type="button">Clear history</button>
-        </div>
-        <div id="emptyState" class="empty">No transactions yet. Tap the plus button to add your first one.</div>
-        <div id="logs" class="history"></div>
-      </section>
+      <!-- Transaction history is stored/synced in the background and viewed in Google Sheets. -->
+      <div id="emptyState" hidden></div>
+      <div id="logs" hidden></div>
+      <button id="clearHistory" type="button" hidden></button>
 
       <section class="card salary-settings" id="salarySettings">
         <div class="section-heading">
@@ -544,9 +537,6 @@
     <a href="#cards" class="nav-item">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M3 10h18"/></svg><span>Cards</span>
     </a>
-    <a href="#history" class="nav-item">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/></svg><span>History</span>
-    </a>
     <a href="#salarySettings" class="nav-item">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M7 9h10M7 13h6"/></svg><span>Salary</span>
     </a>
@@ -562,6 +552,10 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M3 10h18M8 15h3"/></svg>
       <span>Manage cards</span>
     </button>
+    <a class="menu-item" id="transactionHistoryMenuItem" href="https://docs.google.com/spreadsheets/d/11uvk-3i-1QSFKcNEjM4815WqeLlWppjzru2EouWaXFc/edit?gid=1720108361#gid=1720108361">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/></svg>
+      <span>Transaction history</span>
+    </a>
     <a class="menu-item" id="salaryMenuItem" href="#salarySettings">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M6 3v4M18 3v4M5 11h14v9H5z"/></svg>
       <span>Salary schedule</span>
