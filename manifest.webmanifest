@@ -1,0 +1,16 @@
+{
+  "name": "Smart Card Advisor",
+  "short_name": "Card Advisor",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#171716",
+  "theme_color": "#315f63",
+  "icons": [
+    {
+      "src": "assets/logos/bpi.png",
+      "sizes": "520x260",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}
