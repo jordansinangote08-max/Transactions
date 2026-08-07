@@ -744,15 +744,12 @@
     // GitHub Pages logo library. Put matching files inside /assets/logos/ in the repository.
     // Add or remove entries here whenever you add more bank logos.
     const LOGO_LIBRARY = [
-      {name:"BDO",src:"assets/logos/bdo.png"},
-      {name:"BPI",src:"assets/logos/bpi.png"},
-      {name:"China Bank",src:"assets/logos/chinabank.png"},
-      {name:"EastWest",src:"assets/logos/eastwest.png"},
-      {name:"MariBank",src:"assets/logos/maribank.png"},
-      {name:"Metrobank",src:"assets/logos/metrobank.png"},
-      {name:"RCBC",src:"assets/logos/rcbc.png"},
-      {name:"Security Bank",src:"assets/logos/security-bank.png"},
-      {name:"UnionBank",src:"assets/logos/unionbank.png"}
+      {name:"BDO",src:"bdo.png"},
+      {name:"BPI",src:"bpi.png"},
+      {name:"EastWest",src:"eastwest.png"},
+      {name:"Metrobank",src:"metrobank.png"},
+      {name:"RCBC",src:"rcbc.png"},
+      {name:"UnionBank",src:"unionbank.png"}
     ];
 
     let logs = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
@@ -1371,7 +1368,7 @@
         el.winner.innerHTML=`${escapeHtml(card.name)} <span class="last">•••• ${escapeHtml(card.last4)}</span>`;
         el.days.textContent="Safe";
         el.due.textContent=`Due: ${fmtDue(details[winner].due)}`;
-        el.reason.textContent="Recommended because a salary arrives before payment is needed and the purchase is outside the card’s statement safety buffer.";
+        el.reason.textContent="";
       }else{
         selected="";
         document.querySelectorAll('input[name="card"]').forEach(input=>input.checked=false);
