@@ -599,7 +599,6 @@
               <div class="logo-preview custom-card-placeholder" id="customLogoPreview">NEW</div>
             </div>
             <div class="logo-selector" id="customLogoSelector" role="group" aria-label="Choose a card logo"></div>
-            <p class="field-help">Choose a logo from the app library. On GitHub Pages these images load from <strong>assets/logos/</strong>; no file upload is needed.</p>
           </div>
         </section>
 
@@ -740,15 +739,19 @@
     const SALARY_KEY = "smartCardAdvisorSalary_v1";
     const CUSTOM_CARDS_KEY = "smartCardAdvisorCustomCards_v1";
     const BUILTIN_OVERRIDES_KEY = "smartCardAdvisorBuiltInOverrides_v1";
+    const DELETED_BUILTINS_KEY = "smartCardAdvisorDeletedBuiltIns_v1";
 
     // GitHub Pages logo library. Put matching files inside /assets/logos/ in the repository.
     // Add or remove entries here whenever you add more bank logos.
     const LOGO_LIBRARY = [
       {name:"BDO",src:"bdo.png"},
       {name:"BPI",src:"bpi.png"},
+      {name:"China Bank",src:"chinabank.png"},
       {name:"EastWest",src:"eastwest.png"},
+      {name:"MariBank",src:"maribank.png"},
       {name:"Metrobank",src:"metrobank.png"},
       {name:"RCBC",src:"rcbc.png"},
+      {name:"Security Bank",src:"security-bank.png"},
       {name:"UnionBank",src:"unionbank.png"}
     ];
 
@@ -758,6 +761,7 @@
     let salarySettings = {frequency:"monthly",day1:24,dayA:15,dayB:30,weekday:5};
     let customCards = JSON.parse(localStorage.getItem(CUSTOM_CARDS_KEY) || "[]");
     let builtInOverrides = JSON.parse(localStorage.getItem(BUILTIN_OVERRIDES_KEY) || "{}");
+    let deletedBuiltIns = new Set(JSON.parse(localStorage.getItem(DELETED_BUILTINS_KEY) || "[]"));
     let editingCustomCardId = null;
     let pendingCustomLogo = "";
 
@@ -1073,9 +1077,9 @@
 
     function builtInDefaults(){
       return [
-        {id:"EW",name:"EastWest",last4:"3002",logo:"",statementDay:21,statementAdjust:"keep",dueMethod:"fixed_next_month",dueValue:15,dueAdjust:"previous",safetyDays:7},
-        {id:"UB",name:"UnionBank",last4:"6023",logo:"",statementDay:10,statementAdjust:"previous",dueMethod:"calendar_days",dueValue:17,dueAdjust:"next",safetyDays:7},
-        {id:"RCBC",name:"RCBC",last4:"4069",logo:"",statementDay:3,statementAdjust:"keep",dueMethod:"calendar_days",dueValue:25,dueAdjust:"next",safetyDays:7}
+        {id:"EW",name:"EastWest",last4:"3002",logo:"eastwest.png",statementDay:21,statementAdjust:"keep",dueMethod:"fixed_next_month",dueValue:15,dueAdjust:"previous",safetyDays:7},
+        {id:"UB",name:"UnionBank",last4:"6023",logo:"unionbank.png",statementDay:10,statementAdjust:"previous",dueMethod:"calendar_days",dueValue:17,dueAdjust:"next",safetyDays:7},
+        {id:"RCBC",name:"RCBC",last4:"4069",logo:"rcbc.png",statementDay:3,statementAdjust:"keep",dueMethod:"calendar_days",dueValue:25,dueAdjust:"next",safetyDays:7}
       ];
     }
 
@@ -1083,8 +1087,12 @@
       localStorage.setItem(BUILTIN_OVERRIDES_KEY,JSON.stringify(builtInOverrides));
     }
 
+    function saveDeletedBuiltIns(){
+      localStorage.setItem(DELETED_BUILTINS_KEY,JSON.stringify([...deletedBuiltIns]));
+    }
+
     function builtInCards(){
-      return builtInDefaults().map(base=>{
+      return builtInDefaults().filter(base=>!deletedBuiltIns.has(base.id)).map(base=>{
         const merged={...base,...(builtInOverrides[base.id]||{}),id:base.id,builtIn:true};
         return {...merged,calc:date=>calcCustomCard(merged,date)};
       });
@@ -1128,7 +1136,16 @@
         UB:{box:el.ubCard,status:el.ubStatus,choice:"ubChoice"},
         RCBC:{box:el.rcbcCard,status:el.rcbcStatus,choice:"rcbcChoice"}
       };
+      Object.values(map).forEach(refs=>{
+        if(refs.box) refs.box.hidden=true;
+        const input=document.getElementById(refs.choice);
+        if(input?.closest('.choice')) input.closest('.choice').hidden=true;
+      });
       builtInCards().forEach(card=>{
+        const preRefs=map[card.id];
+        if(preRefs?.box) preRefs.box.hidden=false;
+        const preInput=document.getElementById(preRefs?.choice);
+        if(preInput?.closest('.choice')) preInput.closest('.choice').hidden=false;
         const refs=map[card.id];
         if(!refs?.box) return;
         if(!refs.box.querySelector('[data-edit-card]')){
@@ -1224,8 +1241,8 @@
       pendingCustomLogo="";
       el.cardEditorStatus.textContent="";
       el.cardEditorTitle.textContent=card?`Edit ${card.name}`:"Add new card";
-      el.customCardDangerZone.hidden=!card||card.builtIn;
-      el.deleteCustomCard.dataset.cardId=card&&!card.builtIn?card.id:"";
+      el.customCardDangerZone.hidden=!card;
+      el.deleteCustomCard.dataset.cardId=card?card.id:"";
       resetDeleteButton();
 
       if(card){
@@ -1615,26 +1632,31 @@
       el.deleteCustomCard.removeAttribute("aria-live");
     }
 
-    function deleteCustomCardById(cardId){
+    function deleteCardById(cardId){
       const normalizedId=String(cardId??"");
-      const card=customCards.find(item=>String(item.id)===normalizedId);
+      const builtIn=builtInDefaults().find(item=>String(item.id)===normalizedId);
+      const custom=customCards.find(item=>String(item.id)===normalizedId);
+      const card=builtIn?cardById(normalizedId):custom;
       if(!card){
         el.cardEditorStatus.textContent="This card could not be found. Close the editor and try again.";
         resetDeleteButton();
         return false;
       }
 
-      customCards=customCards.filter(item=>String(item.id)!==normalizedId);
-      saveCustomCards();
+      if(builtIn){
+        deletedBuiltIns.add(normalizedId);
+        saveDeletedBuiltIns();
+        delete builtInOverrides[normalizedId];
+        saveBuiltInOverrides();
+      }else{
+        customCards=customCards.filter(item=>String(item.id)!==normalizedId);
+        saveCustomCards();
+        document.querySelectorAll('[data-custom-card]').forEach(node=>{
+          if(String(node.dataset.customCard)===normalizedId) node.remove();
+        });
+      }
 
       if(String(selected)===normalizedId) selected="";
-
-      // Remove the visible card and transaction choice immediately so the
-      // user gets feedback even before the full UI is re-rendered.
-      document.querySelectorAll('[data-custom-card]').forEach(node=>{
-        if(String(node.dataset.customCard)===normalizedId) node.remove();
-      });
-
       closeCardEditor();
       renderBuiltInCards();
       renderCustomCards();
@@ -1647,7 +1669,7 @@
       event.stopPropagation();
 
       const cardId=el.deleteCustomCard.dataset.cardId||editingCustomCardId;
-      const card=customCards.find(item=>String(item.id)===String(cardId));
+      const card=cardById(cardId);
       if(!card){
         el.cardEditorStatus.textContent="This card could not be found. Close the editor and try again.";
         resetDeleteButton();
@@ -1658,11 +1680,11 @@
         el.deleteCustomCard.dataset.confirmDelete="true";
         el.deleteCustomCard.textContent=`Tap again to delete ${card.name}`;
         el.deleteCustomCard.setAttribute("aria-live","polite");
-        el.cardEditorStatus.textContent="Tap the red button again to permanently remove this card. Existing transaction history will keep the saved card name.";
+        el.cardEditorStatus.textContent="Tap the red button again to remove this card. Existing transaction history will keep the saved card name.";
         return;
       }
 
-      deleteCustomCardById(cardId);
+      deleteCardById(cardId);
     });
 
     el.cardsGrid.addEventListener("click",event=>{
