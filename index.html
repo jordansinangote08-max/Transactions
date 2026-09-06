@@ -357,12 +357,14 @@
     .menu-item:active{transform:scale(.97);transition-duration:80ms}
     .menu-item svg{width:20px;height:20px;flex:0 0 auto}
 
-    .custom-card-edit{position:absolute;top:12px;right:12px;width:38px;height:38px;display:grid;place-items:center;border-radius:50%;background:color-mix(in srgb,var(--surface) 88%,transparent);border:1px solid var(--border);z-index:2;transition:background .15s ease,transform .12s var(--ease-spring)}
-    .custom-card-edit:hover{background:var(--primary-soft);color:var(--primary)}
-    .custom-card-edit:active{transform:scale(.9);transition-duration:80ms}
-    .custom-card-edit svg{width:17px;height:17px}
+    .custom-card-edit,.card-statement-btn{position:absolute;top:12px;width:38px;height:38px;display:grid;place-items:center;border-radius:50%;background:color-mix(in srgb,var(--surface) 88%,transparent);border:1px solid var(--border);z-index:2;transition:background .15s ease,transform .12s var(--ease-spring)}
+    .custom-card-edit{right:12px}
+    .card-statement-btn{right:56px}
+    .custom-card-edit:hover,.card-statement-btn:hover{background:var(--primary-soft);color:var(--primary)}
+    .custom-card-edit:active,.card-statement-btn:active{transform:scale(.9);transition-duration:80ms}
+    .custom-card-edit svg,.card-statement-btn svg{width:17px;height:17px}
     .bank-card{position:relative}
-    .custom-card-edit + .bank-brand{padding-right:44px}
+    .custom-card-edit + .bank-brand{padding-right:88px}
 
     .custom-card-form{display:grid;gap:var(--space-5)}
     .form-step{display:grid;gap:var(--space-3);padding:var(--space-4);background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-lg)}
@@ -765,6 +767,43 @@
     </div>
   </section>
 
+  <section class="modal" id="statementModal" hidden aria-hidden="true">
+    <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="statementModalTitle">
+      <div class="modal-head">
+        <div class="bank-brand" style="margin-bottom:0">
+          <div class="bank-logo" id="statementLogo"></div>
+          <div class="bank-brand-copy">
+            <h2 id="statementModalTitle">Billing statement</h2>
+            <p id="statementModalSubtitle">•••• 0000</p>
+          </div>
+        </div>
+        <button class="modal-close" id="closeStatementModal" type="button" aria-label="Close billing statement">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
+      </div>
+
+      <div class="stack">
+        <div class="row">
+          <span>Current cycle</span>
+          <strong id="statementCycleRange">—</strong>
+        </div>
+        <div class="row">
+          <span>Payment due</span>
+          <strong id="statementDue">—</strong>
+        </div>
+        <div class="row">
+          <span>Total this cycle</span>
+          <strong id="statementTotal">₱0.00</strong>
+        </div>
+        <div>
+          <p class="lead" style="margin:var(--space-3) 0 var(--space-2)">Transactions in this cycle</p>
+          <div id="statementEmpty" class="empty" hidden>No transactions logged in this cycle yet.</div>
+          <div id="statementList" class="history"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <script>
     const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbyndwZXzpAAx2voFy8yvQEjr-0DC7NzP8RocThd76Qbyd-qx_lEneheHBYA7AeMbMQL/exec";
     const STORAGE_KEY = "smartLogs";
@@ -846,6 +885,16 @@
       addNewCard: document.getElementById("addNewCard"),
       manageCards: document.getElementById("manageCards"),
       salaryMenuItem: document.getElementById("salaryMenuItem"),
+      statementModal: document.getElementById("statementModal"),
+      closeStatementModal: document.getElementById("closeStatementModal"),
+      statementLogo: document.getElementById("statementLogo"),
+      statementModalTitle: document.getElementById("statementModalTitle"),
+      statementModalSubtitle: document.getElementById("statementModalSubtitle"),
+      statementCycleRange: document.getElementById("statementCycleRange"),
+      statementDue: document.getElementById("statementDue"),
+      statementTotal: document.getElementById("statementTotal"),
+      statementList: document.getElementById("statementList"),
+      statementEmpty: document.getElementById("statementEmpty"),
       cardEditorModal: document.getElementById("cardEditorModal"),
       closeCardEditor: document.getElementById("closeCardEditor"),
       cancelCardEditor: document.getElementById("cancelCardEditor"),
@@ -1190,6 +1239,15 @@
           button.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>' ;
           refs.box.prepend(button);
         }
+        if(!refs.box.querySelector('[data-view-statement]')){
+          const statementButton=document.createElement("button");
+          statementButton.className="card-statement-btn";
+          statementButton.type="button";
+          statementButton.dataset.viewStatement=card.id;
+          statementButton.setAttribute("aria-label",`View ${card.name} billing statement`);
+          statementButton.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h9l3 3v15H6z"/><path d="M9 8h6M9 12h6M9 16h4"/></svg>';
+          refs.box.prepend(statementButton);
+        }
         const title=refs.box.querySelector('.bank-brand-copy h3');
         const meta=refs.box.querySelector('.bank-brand-copy .meta');
         const rows=refs.box.querySelectorAll('.row strong');
@@ -1235,6 +1293,9 @@
         article.className="bank-card";
         article.dataset.customCard=card.id;
         article.innerHTML=`
+          <button class="card-statement-btn" type="button" data-view-statement="${card.id}" aria-label="View ${escapeHtml(card.name)} billing statement">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h9l3 3v15H6z"/><path d="M9 8h6M9 12h6M9 16h4"/></svg>
+          </button>
           <button class="custom-card-edit" type="button" data-edit-card="${card.id}" aria-label="Edit ${escapeHtml(card.name)}">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
           </button>
@@ -1478,6 +1539,66 @@
       if(editingId) resetForm();
     }
 
+    // The current open billing cycle for a card, relative to today: the most recent
+    // statement close (cycleStart is the day after it) through the upcoming statement
+    // close (cycleEnd), plus that cycle's due date. card.calc(date) always returns the
+    // next statement on/after `date`, so seeding with the 1st of the prior month
+    // reliably lands on last cycle's close regardless of the card's statementDay.
+    function currentCycleFor(card){
+      const today=new Date();
+      const upcoming=card.calc(today);
+      const prevSeed=new Date(upcoming.statement.getFullYear(),upcoming.statement.getMonth()-1,1);
+      const previous=card.calc(prevSeed);
+      const cycleStart=new Date(previous.statement);
+      cycleStart.setDate(cycleStart.getDate()+1);
+      return {cycleStart,cycleEnd:upcoming.statement,due:upcoming.due};
+    }
+
+    function openStatementModal(cardId){
+      const card=cardById(cardId);
+      if(!card) return;
+      const {cycleStart,cycleEnd,due}=currentCycleFor(card);
+      const startKey=dateKey(cycleStart);
+      const endKey=dateKey(cycleEnd);
+      const items=logs
+        .filter(log=>log.card===cardId&&log.date>=startKey&&log.date<=endKey)
+        .sort((a,b)=>a.date<b.date?1:-1);
+      const total=items.reduce((sum,log)=>sum+Number(log.amount||0),0);
+
+      el.statementModalTitle.textContent=`${card.name} statement`;
+      el.statementModalSubtitle.textContent=`•••• ${card.last4}`;
+      el.statementLogo.innerHTML=card.logo
+        ? `<img src="${card.logo}" alt="">`
+        : `<span class="custom-card-placeholder" style="width:100%;height:100%;display:grid;place-items:center;font-weight:800">${escapeHtml(initials(card.name))}</span>`;
+      el.statementCycleRange.textContent=`${fmtDue(cycleStart)} – ${fmtDue(cycleEnd)}`;
+      el.statementDue.textContent=fmtDue(due);
+      el.statementTotal.textContent=`₱${total.toLocaleString("en-PH",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+
+      el.statementList.innerHTML="";
+      el.statementEmpty.hidden=items.length>0;
+      items.forEach(log=>{
+        const item=document.createElement("div");
+        item.className="history-item";
+        const note=log.note||card.name;
+        item.innerHTML=`
+          <div class="history-main">
+            <div class="history-title">${escapeHtml(note)}</div>
+            <div class="history-meta">${fmtLong(log.date)} · ₱${Number(log.amount).toLocaleString("en-PH",{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
+          </div>`;
+        el.statementList.appendChild(item);
+      });
+
+      revealOverlay(el.statementModal);
+      el.statementModal.setAttribute("aria-hidden","false");
+      document.body.classList.add("modal-open");
+    }
+
+    function closeStatementModal(){
+      concealOverlay(el.statementModal);
+      el.statementModal.setAttribute("aria-hidden","true");
+      document.body.classList.remove("modal-open");
+    }
+
     function renderLogs(){
       el.logs.innerHTML = "";
       el.emptyState.hidden = logs.length>0;
@@ -1598,7 +1719,11 @@
     el.closeModal.addEventListener("click",closeModal);
     el.cancelButton.addEventListener("click",closeModal);
     el.modal.addEventListener("click",event=>{if(event.target===el.modal) closeModal()});
-    document.addEventListener("keydown",event=>{if(event.key==="Escape"&&!el.modal.hidden) closeModal()});
+    document.addEventListener("keydown",event=>{
+      if(event.key!=="Escape") return;
+      if(!el.modal.hidden) closeModal();
+      else if(!el.statementModal.hidden) closeStatementModal();
+    });
     el.date.addEventListener("change",updateRecommendation);
     el.cardChoices.addEventListener("change",event=>{
       if(event.target.matches('input[name="card"]')) selected=event.target.value;
@@ -1747,9 +1872,14 @@
     });
 
     el.cardsGrid.addEventListener("click",event=>{
-      const button=event.target.closest("[data-edit-card]");
-      if(button)openCardEditor(button.dataset.editCard);
+      const editButton=event.target.closest("[data-edit-card]");
+      if(editButton){openCardEditor(editButton.dataset.editCard);return}
+      const statementButton=event.target.closest("[data-view-statement]");
+      if(statementButton)openStatementModal(statementButton.dataset.viewStatement);
     });
+
+    el.closeStatementModal.addEventListener("click",closeStatementModal);
+    el.statementModal.addEventListener("click",event=>{if(event.target===el.statementModal) closeStatementModal()});
 
     function applyTheme(){
       const theme = localStorage.getItem(THEME_KEY) || (matchMedia("(prefers-color-scheme:dark)").matches ? "dark" : "light");
