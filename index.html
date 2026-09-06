@@ -796,11 +796,6 @@
           <span>Total this cycle</span>
           <strong id="statementTotal">₱0.00</strong>
         </div>
-        <div>
-          <p class="lead" style="margin:var(--space-3) 0 var(--space-2)">Transactions in this cycle</p>
-          <div id="statementEmpty" class="empty" hidden>No transactions logged in this cycle yet.</div>
-          <div id="statementList" class="history"></div>
-        </div>
       </div>
     </div>
   </section>
@@ -899,8 +894,6 @@
       statementCycleRange: document.getElementById("statementCycleRange"),
       statementDue: document.getElementById("statementDue"),
       statementTotal: document.getElementById("statementTotal"),
-      statementList: document.getElementById("statementList"),
-      statementEmpty: document.getElementById("statementEmpty"),
       cardEditorModal: document.getElementById("cardEditorModal"),
       closeCardEditor: document.getElementById("closeCardEditor"),
       cancelCardEditor: document.getElementById("cancelCardEditor"),
@@ -1634,20 +1627,6 @@
       el.statementCycleRange.textContent=`${fmtDue(cycleStart)} – ${fmtDue(cycleEnd)}`;
       el.statementDue.textContent=fmtDue(due);
       el.statementTotal.textContent=`₱${total.toLocaleString("en-PH",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
-
-      el.statementList.innerHTML="";
-      el.statementEmpty.hidden=items.length>0;
-      items.forEach(item=>{
-        const row=document.createElement("div");
-        row.className="history-item";
-        const note=item.note||card.name;
-        row.innerHTML=`
-          <div class="history-main">
-            <div class="history-title">${escapeHtml(note)}</div>
-            <div class="history-meta">${fmtLong(item.date)} · ₱${Number(item.amount).toLocaleString("en-PH",{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
-          </div>`;
-        el.statementList.appendChild(row);
-      });
     }
 
     function localStatementItems(cardId,startKey,endKey){
