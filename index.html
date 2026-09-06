@@ -81,8 +81,6 @@
     .cards-grid > .bank-card{height:100%;display:flex;flex-direction:column}
     .cards-grid > .bank-card .row:last-child{margin-top:auto}
     .bank-card{padding:var(--space-4);border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--surface-2);min-width:0}
-    .bank-card.good{background:linear-gradient(145deg,var(--success-soft),var(--surface-2));border-color:color-mix(in srgb,var(--success) 35%,var(--border))}
-    .bank-card.bad{background:linear-gradient(145deg,var(--error-soft),var(--surface-2));border-color:color-mix(in srgb,var(--error) 35%,var(--border))}
     .bank-card h3{font-size:1.05rem}
     .meta{font-size:var(--text-xs);color:var(--muted);margin-top:.2rem}
     .row{display:flex;justify-content:space-between;gap:var(--space-3);padding-top:var(--space-3);margin-top:var(--space-3);border-top:1px solid var(--divider);font-size:var(--text-sm)}
@@ -205,7 +203,6 @@
     .row strong{max-width:58%}
     .recommendation{overflow:hidden}
     .winner,.reason{overflow-wrap:anywhere}
-    .salary-note{margin-top:var(--space-3);font-size:var(--text-xs);color:var(--muted)}
     .bank-card.eligible{background:linear-gradient(145deg,var(--success-soft),var(--surface-2));border-color:color-mix(in srgb,var(--success) 35%,var(--border))}
     .bank-card.ineligible{background:linear-gradient(145deg,var(--error-soft),var(--surface-2));border-color:color-mix(in srgb,var(--error) 28%,var(--border))}
     @media(max-width:900px){
@@ -926,19 +923,9 @@
       return `${values.year}-${values.month}-${values.day}`;
     }
 
-    function addMonths(date,months){
-      const d = new Date(date);
-      d.setMonth(d.getMonth()+months);
-      return d;
-    }
-
     function parseDate(value){
       const [y,m,d] = value.split("-").map(Number);
       return new Date(y,m-1,d);
-    }
-
-    function fmt(date){
-      return date.toLocaleDateString("en-PH",{month:"short",day:"numeric"});
     }
 
     function fmtLong(value){
@@ -1084,26 +1071,6 @@
         statement=adjuster?adjuster(raw):raw;
       }
       return statement;
-    }
-
-    function calcEW(date){
-      const statement=statementForDay(date,21);
-      const originalDue=new Date(statement.getFullYear(),statement.getMonth()+1,15);
-      return {statement,due:moveToPreviousBusinessDay(originalDue)};
-    }
-
-    function calcUB(date){
-      const statement=statementForDay(date,10,moveToPreviousBusinessDay);
-      const originalDue=new Date(statement);
-      originalDue.setDate(originalDue.getDate()+17);
-      return {statement,due:moveToNextBusinessDay(originalDue)};
-    }
-
-    function calcRCBC(date){
-      const statement=statementForDay(date,3);
-      const originalDue=new Date(statement);
-      originalDue.setDate(originalDue.getDate()+25);
-      return {statement,due:moveToNextBusinessDay(originalDue)};
     }
 
     function daysUntil(due,from){
@@ -1266,12 +1233,6 @@
         return `<div class="${className}"><img src="${card.logo}" alt=""></div>`;
       }
       return `<div class="${className} custom-card-placeholder">${escapeHtml(initials(card.name))}</div>`;
-    }
-
-    function safeWindowText(card){
-      const day=Number(card.statementDay);
-      const start=day>=28 ? 1 : day+1;
-      return day>=28 ? `${start} → month-end` : `${start} → ${day}`;
     }
 
     function renderBuiltInCards(){
