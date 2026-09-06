@@ -97,7 +97,10 @@
     .btn{min-height:48px;padding:0 var(--space-4);border-radius:var(--radius-md);font-size:var(--text-sm);font-weight:700;transition:background var(--transition),border-color var(--transition),color var(--transition),transform .16s var(--ease-spring)}
     .btn:active{transform:scale(.96);transition-duration:90ms}
     .btn-primary{background:var(--primary);color:var(--inverse);box-shadow:0 8px 20px color-mix(in srgb,var(--primary) 22%,transparent)}
-    .btn-primary:hover{background:var(--primary-hover);transform:translateY(-1px)}
+    .btn-primary:hover{background:var(--primary-hover)}
+    @media(hover:hover) and (pointer:fine){
+      .btn-primary:hover{transform:translateY(-1px)}
+    }
     .btn-primary:active{transform:scale(.96)}
     .btn-secondary{background:var(--surface-offset);border:1px solid var(--border)}
     .btn-danger{color:var(--error);border:1px solid color-mix(in srgb,var(--error) 40%,var(--border));background:transparent}
