@@ -783,6 +783,7 @@
       </div>
 
       <div class="stack">
+        <p class="field-help" id="statementSourceNote" style="margin:0"></p>
         <div class="row">
           <span>Current cycle</span>
           <strong id="statementCycleRange">—</strong>
@@ -806,6 +807,10 @@
 
   <script>
     const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbyndwZXzpAAx2voFy8yvQEjr-0DC7NzP8RocThd76Qbyd-qx_lEneheHBYA7AeMbMQL/exec";
+    // "Transactions" tab published to the web as CSV (File > Share > Publish to web).
+    // Read-only, no auth — this is what makes the billing statement realtime against
+    // the sheet instead of only this browser's local copy.
+    const STATEMENT_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQbRqHzmP9DTyH5HEAodQW9wWFqPrf1A8C0so-VPp0UkWqD_xhUgRMHxa4B7GdXfpH80jBIzkAEC_F-/pub?gid=1720108361&single=true&output=csv";
     const STORAGE_KEY = "smartLogs";
     const THEME_KEY = "smartCardAdvisorTheme";
     const SALARY_KEY = "smartCardAdvisorSalary_v1";
@@ -890,6 +895,7 @@
       statementLogo: document.getElementById("statementLogo"),
       statementModalTitle: document.getElementById("statementModalTitle"),
       statementModalSubtitle: document.getElementById("statementModalSubtitle"),
+      statementSourceNote: document.getElementById("statementSourceNote"),
       statementCycleRange: document.getElementById("statementCycleRange"),
       statementDue: document.getElementById("statementDue"),
       statementTotal: document.getElementById("statementTotal"),
@@ -953,6 +959,66 @@
       const m=String(date.getMonth()+1).padStart(2,"0");
       const d=String(date.getDate()).padStart(2,"0");
       return `${y}-${m}-${d}`;
+    }
+
+    // Minimal RFC4180-ish CSV parser: handles quoted fields, embedded commas,
+    // escaped ("") quotes, and quoted newlines (a Note like "Dinner, drinks").
+    function parseCsv(text){
+      const rows=[];
+      let row=[],field="",inQuotes=false;
+      for(let i=0;i<text.length;i++){
+        const char=text[i];
+        if(inQuotes){
+          if(char==='"'){
+            if(text[i+1]==='"'){ field+='"'; i++; }
+            else inQuotes=false;
+          }else field+=char;
+        }else if(char==='"') inQuotes=true;
+        else if(char===','){ row.push(field); field=""; }
+        else if(char==="\n"||char==="\r"){
+          if(char==="\r"&&text[i+1]==="\n") i++;
+          row.push(field); field="";
+          if(row.length>1||row[0]!=="") rows.push(row);
+          row=[];
+        }else field+=char;
+      }
+      if(field!==""||row.length){ row.push(field); rows.push(row); }
+      return rows;
+    }
+
+    // Sheets exports a date cell as whatever format the column is displaying
+    // (commonly M/D/YYYY or an ISO string) — normalize either to this app's
+    // "YYYY-MM-DD" key so it compares correctly against a card's cycle range.
+    function normalizeSheetDate(value){
+      const raw=String(value||"").trim();
+      if(/^\d{4}-\d{2}-\d{2}/.test(raw)) return raw.slice(0,10);
+      const usMatch=raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+      if(usMatch){
+        const [,m,d,y]=usMatch;
+        return `${y}-${m.padStart(2,"0")}-${d.padStart(2,"0")}`;
+      }
+      const parsed=new Date(raw);
+      return Number.isNaN(parsed.getTime())?"":dateKey(parsed);
+    }
+
+    async function fetchStatementRows(){
+      const response=await fetch(STATEMENT_CSV_URL,{cache:"no-store"});
+      if(!response.ok) throw new Error(`Sheet fetch failed: ${response.status}`);
+      const text=await response.text();
+      const table=parseCsv(text);
+      if(!table.length) return [];
+      const header=table[0].map(cell=>cell.trim().toLowerCase());
+      const idx=name=>header.indexOf(name);
+      const dateIdx=idx("date"),amountIdx=idx("amount"),cardIdx=idx("card"),noteIdx=idx("note");
+      if(dateIdx===-1||amountIdx===-1||cardIdx===-1) throw new Error("Sheet is missing an expected column (Date/Amount/Card)");
+      return table.slice(1)
+        .filter(cells=>cells.some(cell=>cell.trim()!==""))
+        .map(cells=>({
+          date:normalizeSheetDate(cells[dateIdx]),
+          amount:Number(String(cells[amountIdx]||"0").replace(/[^0-9.-]/g,"")),
+          card:(cells[cardIdx]||"").trim(),
+          note:(noteIdx>-1?cells[noteIdx]:"").trim()
+        }));
     }
 
     function easterSunday(year){
@@ -1554,46 +1620,74 @@
       return {cycleStart,cycleEnd:upcoming.statement,due:upcoming.due};
     }
 
-    function openStatementModal(cardId){
-      const card=cardById(cardId);
-      if(!card) return;
-      const {cycleStart,cycleEnd,due}=currentCycleFor(card);
-      const startKey=dateKey(cycleStart);
-      const endKey=dateKey(cycleEnd);
-      const items=logs
-        .filter(log=>log.card===cardId&&log.date>=startKey&&log.date<=endKey)
-        .sort((a,b)=>a.date<b.date?1:-1);
-      const total=items.reduce((sum,log)=>sum+Number(log.amount||0),0);
+    let statementRequestToken=0;
+
+    function renderStatement(card,cycleStart,cycleEnd,due,items,sourceNote){
+      const total=items.reduce((sum,item)=>sum+Number(item.amount||0),0);
 
       el.statementModalTitle.textContent=`${card.name} statement`;
       el.statementModalSubtitle.textContent=`•••• ${card.last4}`;
       el.statementLogo.innerHTML=card.logo
         ? `<img src="${card.logo}" alt="">`
         : `<span class="custom-card-placeholder" style="width:100%;height:100%;display:grid;place-items:center;font-weight:800">${escapeHtml(initials(card.name))}</span>`;
+      el.statementSourceNote.textContent=sourceNote;
       el.statementCycleRange.textContent=`${fmtDue(cycleStart)} – ${fmtDue(cycleEnd)}`;
       el.statementDue.textContent=fmtDue(due);
       el.statementTotal.textContent=`₱${total.toLocaleString("en-PH",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
 
       el.statementList.innerHTML="";
       el.statementEmpty.hidden=items.length>0;
-      items.forEach(log=>{
-        const item=document.createElement("div");
-        item.className="history-item";
-        const note=log.note||card.name;
-        item.innerHTML=`
+      items.forEach(item=>{
+        const row=document.createElement("div");
+        row.className="history-item";
+        const note=item.note||card.name;
+        row.innerHTML=`
           <div class="history-main">
             <div class="history-title">${escapeHtml(note)}</div>
-            <div class="history-meta">${fmtLong(log.date)} · ₱${Number(log.amount).toLocaleString("en-PH",{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
+            <div class="history-meta">${fmtLong(item.date)} · ₱${Number(item.amount).toLocaleString("en-PH",{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
           </div>`;
-        el.statementList.appendChild(item);
+        el.statementList.appendChild(row);
       });
+    }
 
+    function localStatementItems(cardId,startKey,endKey){
+      return logs
+        .filter(log=>log.card===cardId&&log.date>=startKey&&log.date<=endKey)
+        .map(log=>({date:log.date,amount:log.amount,note:log.note}))
+        .sort((a,b)=>a.date<b.date?1:-1);
+    }
+
+    async function openStatementModal(cardId){
+      const card=cardById(cardId);
+      if(!card) return;
+      const requestToken=++statementRequestToken;
+      const {cycleStart,cycleEnd,due}=currentCycleFor(card);
+      const startKey=dateKey(cycleStart);
+      const endKey=dateKey(cycleEnd);
+
+      // Show something instantly from local data, then upgrade to the live
+      // sheet once it arrives — opening should never feel like it's waiting
+      // on the network.
+      renderStatement(card,cycleStart,cycleEnd,due,localStatementItems(cardId,startKey,endKey),"Loading live data from your Google Sheet…");
       revealOverlay(el.statementModal);
       el.statementModal.setAttribute("aria-hidden","false");
       document.body.classList.add("modal-open");
+
+      try{
+        const rows=await fetchStatementRows();
+        if(requestToken!==statementRequestToken) return; // modal moved on to a different card/closed
+        const items=rows
+          .filter(row=>row.card===cardId&&row.date>=startKey&&row.date<=endKey)
+          .sort((a,b)=>a.date<b.date?1:-1);
+        renderStatement(card,cycleStart,cycleEnd,due,items,"Live from your Google Sheet, just now.");
+      }catch(error){
+        if(requestToken!==statementRequestToken) return;
+        renderStatement(card,cycleStart,cycleEnd,due,localStatementItems(cardId,startKey,endKey),"Couldn't reach the Sheet — showing this device's locally saved data.");
+      }
     }
 
     function closeStatementModal(){
+      statementRequestToken++;
       concealOverlay(el.statementModal);
       el.statementModal.setAttribute("aria-hidden","true");
       document.body.classList.remove("modal-open");
