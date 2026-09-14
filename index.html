@@ -825,15 +825,17 @@
     // GitHub Pages logo library. Put matching files inside /assets/logos/ in the repository.
     // Add or remove entries here whenever you add more bank logos.
     const LOGO_LIBRARY = [
-      {name:"BDO",src:"bdo.png"},
-      {name:"BPI",src:"bpi.png"},
+      {name:"BDO",src:"bdo.svg"},
+      {name:"BPI",src:"bpi.svg"},
       {name:"China Bank",src:"chinabank.png"},
       {name:"EastWest",src:"eastwest.png"},
+      {name:"Landbank",src:"landbank.png"},
       {name:"MariBank",src:"maribank.png"},
-      {name:"Metrobank",src:"metrobank.png"},
+      {name:"Metrobank",src:"metrobank.svg"},
+      {name:"PNB",src:"pnb.svg"},
       {name:"RCBC",src:"rcbc.png"},
-      {name:"Security Bank",src:"security-bank.png"},
-      {name:"UnionBank",src:"unionbank.png"}
+      {name:"Security Bank",src:"security-bank.svg"},
+      {name:"UnionBank",src:"unionbank.svg"}
     ];
 
     let logs = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
@@ -1198,7 +1200,7 @@
     function builtInDefaults(){
       return [
         {id:"EW",name:"EastWest",last4:"3002",logo:"eastwest.png",statementDay:21,statementAdjust:"keep",dueMethod:"fixed_next_month",dueValue:15,dueAdjust:"previous",safetyDays:7},
-        {id:"UB",name:"UnionBank",last4:"6023",logo:"unionbank.png",statementDay:10,statementAdjust:"previous",dueMethod:"calendar_days",dueValue:17,dueAdjust:"next",safetyDays:7},
+        {id:"UB",name:"UnionBank",last4:"6023",logo:"unionbank.svg",statementDay:10,statementAdjust:"previous",dueMethod:"calendar_days",dueValue:17,dueAdjust:"next",safetyDays:7},
         {id:"RCBC",name:"RCBC",last4:"4069",logo:"rcbc.png",statementDay:3,statementAdjust:"keep",dueMethod:"calendar_days",dueValue:25,dueAdjust:"next",safetyDays:7}
       ];
     }
