@@ -1,0 +1,4 @@
+# ui-ux-pro-max skill data files record sha256 hashes over their bytes, so a
+# CRLF checkout breaks `validate_data.py`. Pin them to LF everywhere.
+.claude/skills/ui-ux-pro-max/data/**/*.csv   text eol=lf
+.claude/skills/ui-ux-pro-max/data/**/*.json  text eol=lf
