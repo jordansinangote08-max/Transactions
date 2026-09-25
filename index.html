@@ -1729,6 +1729,16 @@
       el.statementTotal.textContent=`₱${total.toLocaleString("en-PH",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
     }
 
+    // A sheet row belongs to a card if its Card cell is either the card's name or
+    // its id. Compared case- and space-insensitively, because the cell is free text
+    // that may have been edited by hand in the spreadsheet.
+    function matchesCard(cellValue,card){
+      if(!card) return false;
+      const norm=value=>String(value||"").trim().replace(/\s+/g," ").toLowerCase();
+      const cell=norm(cellValue);
+      return cell!==""&&(cell===norm(card.name)||cell===norm(card.id));
+    }
+
     function localStatementItems(cardId,startKey,endKey){
       return logs
         .filter(log=>log.card===cardId&&log.date>=startKey&&log.date<=endKey)
@@ -1756,7 +1766,10 @@
         const rows=await fetchStatementRows();
         if(requestToken!==statementRequestToken) return; // modal moved on to a different card/closed
         const items=rows
-          .filter(row=>row.card===cardId&&row.date>=startKey&&row.date<=endKey)
+          // Rows written before the switch carry the id ("EW", "CUSTOM_1790..."),
+          // newer ones carry the name. Accept either so a card keeps its history
+          // across the change rather than appearing to start from empty.
+          .filter(row=>matchesCard(row.card,card)&&row.date>=startKey&&row.date<=endKey)
           .sort((a,b)=>a.date<b.date?1:-1);
         renderStatement(card,cycleStart,cycleEnd,due,items,"Live from your Google Sheet, just now.");
       }catch(error){
@@ -1925,10 +1938,15 @@
         fetch(WEB_APP_URL,{
           method:"POST",
           mode:"no-cors",
-          // cardName rides along so the sheet reads "MariBank" rather than the
-          // CUSTOM_<timestamp> id. The id still goes in `card`, because that is what
-          // fetchStatementRows() matches rows back on and it has to stay stable.
-          body:new URLSearchParams({amount:String(amount),card,cardName:selectedCardRecord?.name||card,note:note||card,date})
+          // The sheet records the card by the name you gave it, not by its internal
+          // id — "MariBank", not CUSTOM_1790355986367. The id stays the key inside
+          // the app; only what leaves for the sheet changes.
+          body:new URLSearchParams({
+            amount:String(amount),
+            card:selectedCardRecord?.name||card,
+            note:note||card,
+            date
+          })
         }).catch(()=>{});
       }
 
