@@ -1714,7 +1714,7 @@
 
     let statementRequestToken=0;
 
-    function renderStatement(card,cycleStart,cycleEnd,due,items,sourceNote){
+    function renderStatement(card,cycleStart,cycleEnd,due,items,sourceNote,pending){
       const total=items.reduce((sum,item)=>sum+Number(item.amount||0),0);
 
       el.statementModalTitle.textContent=`${card.name} statement`;
@@ -1726,7 +1726,13 @@
       el.statementCreditLimit.textContent=card.creditLimit==null?"—":fmtMoney(card.creditLimit);
       el.statementCycleRange.textContent=`${fmtDue(cycleStart)} – ${fmtDue(cycleEnd)}`;
       el.statementDue.textContent=fmtDue(due);
-      el.statementTotal.textContent=`₱${total.toLocaleString("en-PH",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+      // While the sheet is still loading, an empty local cache would render as a
+      // confident "₱0.00" and then snap to the real figure a second later. That reads
+      // as the total flickering, and worse, ₱0.00 is a claim the app cannot support
+      // yet. Show a placeholder until there is something real to show.
+      el.statementTotal.textContent = (pending && !items.length)
+        ? "—"
+        : `₱${total.toLocaleString("en-PH",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
     }
 
     // A sheet row belongs to a card if its Card cell is either the card's name or
@@ -1757,7 +1763,7 @@
       // Show something instantly from local data, then upgrade to the live
       // sheet once it arrives — opening should never feel like it's waiting
       // on the network.
-      renderStatement(card,cycleStart,cycleEnd,due,localStatementItems(cardId,startKey,endKey),"Loading live data from your Google Sheet…");
+      renderStatement(card,cycleStart,cycleEnd,due,localStatementItems(cardId,startKey,endKey),"Loading live data from your Google Sheet…",true);
       revealOverlay(el.statementModal);
       el.statementModal.setAttribute("aria-hidden","false");
       document.body.classList.add("modal-open");
