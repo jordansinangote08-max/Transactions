@@ -1925,7 +1925,10 @@
         fetch(WEB_APP_URL,{
           method:"POST",
           mode:"no-cors",
-          body:new URLSearchParams({amount:String(amount),card,note:note||card,date})
+          // cardName rides along so the sheet reads "MariBank" rather than the
+          // CUSTOM_<timestamp> id. The id still goes in `card`, because that is what
+          // fetchStatementRows() matches rows back on and it has to stay stable.
+          body:new URLSearchParams({amount:String(amount),card,cardName:selectedCardRecord?.name||card,note:note||card,date})
         }).catch(()=>{});
       }
 

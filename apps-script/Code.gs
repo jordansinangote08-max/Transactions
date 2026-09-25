@@ -13,7 +13,11 @@
  *
  * Sheet layout — column order is a contract, do not reorder:
  *
- *   A Timestamp | B Date | C Amount | D Card | E Note
+ *   A Timestamp | B Date | C Amount | D Card | E Note | F Card Name
+ *
+ * Card holds the id the web app uses as its matching key — "EW", "UB", "RCBC",
+ * or a generated CUSTOM_<timestamp> — so it must stay stable. Card Name holds
+ * the label you typed ("MariBank"), purely so the sheet is readable.
  *
  * The published CSV's header row must keep the names Date, Amount, Card and
  * Note, because index.html looks columns up by header name rather than index.
@@ -62,6 +66,7 @@ function doPost(e) {
     const card = normalizeCard(params.card);
     const note = String(params.note || "Website").trim();
     const date = parseDateInput(params.date);
+    const cardName = String(params.cardName || "").trim();
 
     if (!Number.isFinite(amount) || amount <= 0) {
       return jsonResponse({
@@ -79,9 +84,11 @@ function doPost(e) {
       });
     }
 
-    saveTransaction(amount, card, note, date);
+    saveTransaction(amount, card, note, date, cardName);
 
-    return jsonResponse({ ok: true, amount: amount, card: card, date: date });
+    return jsonResponse({
+      ok: true, amount: amount, card: card, cardName: cardName, date: date
+    });
   } catch (error) {
     console.error("doPost failed: " + error.message);
     return jsonResponse({ ok: false, error: error.message });
@@ -169,21 +176,39 @@ function getTransactionSheet() {
  * Two requests arriving together can both resolve the same last row, so the write
  * is serialised — without the lock one of them silently overwrites the other.
  */
-function saveTransaction(amount, card, note, date) {
+function saveTransaction(amount, card, note, date, cardName) {
   const lock = LockService.getScriptLock();
   lock.waitLock(20000);
 
   try {
-    getTransactionSheet().appendRow([
+    const sheet = getTransactionSheet();
+    ensureCardNameColumn(sheet);
+
+    sheet.appendRow([
       new Date(),
       date ? new Date(date) : new Date(),
       Number(amount),
       normalizeCard(card),
-      note
+      note,
+      cardName || normalizeCard(card)
     ]);
   } finally {
     lock.releaseLock();
   }
+}
+
+/**
+ * Adds the Card Name header the first time a row needs it.
+ *
+ * Only ever writes F1, and only when it is empty, so a sheet that already has
+ * the column — or something else in F — is left alone. Rows saved before this
+ * column existed keep an empty cell; there is no name to backfill them with.
+ */
+function ensureCardNameColumn(sheet) {
+  if (sheet.getLastRow() === 0) return;
+  if (String(sheet.getRange(1, 6).getValue()).trim() !== "") return;
+
+  sheet.getRange(1, 6).setValue("Card Name");
 }
 
 /** Every data row as {date, amount, card, note}, header row dropped. */
@@ -199,7 +224,8 @@ function readTransactions() {
         date: new Date(row[1]),
         amount: Number(row[2]),
         card: normalizeCard(row[3]),
-        note: row[4]
+        note: row[4],
+        cardName: row[5] || normalizeCard(row[3])
       };
     });
 }
