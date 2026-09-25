@@ -1143,8 +1143,47 @@
       return Number.isNaN(parsed.getTime())?"":dateKey(parsed);
     }
 
+    /**
+     * Rows for the billing statement, live where possible.
+     *
+     * The published CSV is served through Google's CDN, which caches it for several
+     * minutes. cache:"no-store" only governs *this browser's* cache, so a row deleted
+     * in the spreadsheet kept coming back until that cache expired. The Apps Script
+     * endpoint queries the sheet directly and has no such cache, so it is tried first.
+     *
+     * The CSV stays as a fallback: the script endpoint needs a deployment that allows
+     * anyone to access it, and if that is not the case — or it is slow, or erroring —
+     * stale rows still beat no rows.
+     */
     async function fetchStatementRows(){
-      const response=await fetch(STATEMENT_CSV_URL,{cache:"no-store"});
+      try{
+        return await fetchRowsFromScript();
+      }catch(error){
+        console.warn("Live sheet read failed, falling back to the published CSV.",error);
+        return await fetchRowsFromCsv();
+      }
+    }
+
+    async function fetchRowsFromScript(){
+      const url=`${WEB_APP_URL}?action=entries&_=${Date.now()}`;
+      const response=await fetch(url,{cache:"no-store",redirect:"follow"});
+      if(!response.ok) throw new Error(`Script read failed: ${response.status}`);
+
+      const payload=await response.json();
+      if(!payload||!payload.ok) throw new Error(payload&&payload.error||"Script returned no data");
+
+      return (payload.entries||[]).map(entry=>({
+        date:normalizeSheetDate(entry.date),
+        amount:Number(entry.amount)||0,
+        card:String(entry.card||"").trim(),
+        note:String(entry.note||"").trim()
+      }));
+    }
+
+    async function fetchRowsFromCsv(){
+      // Cache-bust so at least the browser and any intermediate proxy re-request it.
+      // Google's own cache on the published URL is outside our control.
+      const response=await fetch(`${STATEMENT_CSV_URL}&_=${Date.now()}`,{cache:"no-store"});
       if(!response.ok) throw new Error(`Sheet fetch failed: ${response.status}`);
       const text=await response.text();
       const table=parseCsv(text);
