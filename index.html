@@ -117,6 +117,10 @@
     .stack{display:grid;gap:var(--space-4)}
 
     /* A vertical list of horizontal rows: logo | name | due + status | actions. */
+    .cards-head{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--space-3);margin-bottom:var(--space-3)}
+    .bills-total{display:grid;justify-items:end;gap:1px;text-align:right;min-width:0}
+    .bills-total strong{font-size:1.15rem;line-height:1.15;font-variant-numeric:tabular-nums;white-space:nowrap}
+    .bills-total span{font-size:var(--text-xs);color:var(--muted);line-height:1.25}
     .cards-grid{display:grid;grid-template-columns:1fr;gap:var(--space-3);align-items:stretch}
     .bank-card{
       display:grid;
@@ -605,7 +609,13 @@
 
       <section class="dashboard" id="cards">
         <section class="card">
-          <h2>Your Cards</h2>
+          <div class="cards-head">
+            <h2>Your Cards</h2>
+            <div class="bills-total" id="billsTotal">
+              <strong id="billsTotalValue">—</strong>
+              <span id="billsTotalLabel">payable next payday</span>
+            </div>
+          </div>
           <!-- Built-in and custom cards are rendered by renderCardRows() through a single
                template, so the row layout is defined in exactly one place. -->
           <div class="cards-grid" id="cardsGrid"></div>
@@ -1060,6 +1070,9 @@
       salaryStatus: document.getElementById("salaryStatus"),
       saveSalarySettings: document.getElementById("saveSalarySettings"),
       cardsGrid: document.getElementById("cardsGrid"),
+      billsTotal: document.getElementById("billsTotal"),
+      billsTotalValue: document.getElementById("billsTotalValue"),
+      billsTotalLabel: document.getElementById("billsTotalLabel"),
       customCreditLimit: document.getElementById("customCreditLimit"),
       historyModal: document.getElementById("historyModal"),
       openHistoryModal: document.getElementById("transactionHistoryMenuItem"),
@@ -1354,6 +1367,7 @@
       localStorage.setItem(SALARY_KEY,JSON.stringify(salarySettings));
       el.salaryStatus.textContent="Salary schedule saved. Recommendations updated.";
       updateRecommendation();
+      refreshBillsTotal();
     }
 
     function dateForMonthDay(year,month,day){
@@ -1781,6 +1795,79 @@
     // close (cycleEnd), plus that cycle's due date. card.calc(date) always returns the
     // next statement on/after `date`, so seeding with the 1st of the prior month
     // reliably lands on last cycle's close regardless of the card's statementDay.
+    /** The next payday on or after tomorrow, from the salary schedule. */
+    function nextSalaryDate(){
+      const today=new Date();
+      const horizon=new Date(today.getFullYear(),today.getMonth()+3,1);
+      return salaryDatesBetween(today,horizon)[0]||null;
+    }
+
+    /**
+     * Total of the bills this payday can cover.
+     *
+     * A bill counts when its due date falls *after* the next salary date — with a
+     * payday on the 24th that means the 25th onwards. Anything due on or before
+     * payday has to come out of money already in hand, so including it would
+     * overstate what the incoming salary actually covers.
+     *
+     * Amounts come from the sheet, because the local log only keeps 48 hours and
+     * would undercount a cycle badly.
+     */
+    function billsPayableNextSalary(rows){
+      const salaryDate=nextSalaryDate();
+      if(!salaryDate) return null;
+
+      let total=0, counted=0, skipped=0;
+
+      allCards().forEach(card=>{
+        const {cycleStart,cycleEnd,due}=currentCycleFor(card);
+        if(!(due>salaryDate)){ skipped++; return; }
+        counted++;
+        // Sheet rows carry a "YYYY-MM-DD" key, not a Date — comparing them against
+        // Date objects silently matches nothing, so the bounds are keyed too. This is
+        // the same comparison the statement sheet makes.
+        const startKey=dateKey(cycleStart), endKey=dateKey(cycleEnd);
+        total+=rows
+          .filter(row=>matchesCard(row.card,card)&&row.date>=startKey&&row.date<=endKey)
+          .reduce((sum,row)=>sum+(Number(row.amount)||0),0);
+      });
+
+      return {total,counted,skipped,salaryDate};
+    }
+
+    let billsTotalToken=0;
+
+    async function refreshBillsTotal(){
+      const token=++billsTotalToken;
+      const salaryDate=nextSalaryDate();
+
+      if(!salaryDate){
+        el.billsTotalValue.textContent="—";
+        el.billsTotalLabel.textContent="set a salary schedule";
+        return;
+      }
+
+      // No figure until the sheet answers — a zero here would read as "nothing due".
+      el.billsTotalValue.textContent="—";
+      el.billsTotalLabel.textContent="adding up…";
+
+      try{
+        const rows=await fetchStatementRows();
+        if(token!==billsTotalToken) return;
+        const result=billsPayableNextSalary(rows);
+        if(!result) return;
+        el.billsTotalValue.textContent=fmtMoney(result.total);
+        el.billsTotalLabel.textContent=result.counted
+          ? `${result.counted} bill${result.counted===1?"":"s"} due after ${fmtDue(result.salaryDate)}`
+          : `nothing due after ${fmtDue(result.salaryDate)}`;
+      }catch(error){
+        if(token!==billsTotalToken) return;
+        console.warn("Could not total the bills",error);
+        el.billsTotalValue.textContent="—";
+        el.billsTotalLabel.textContent="sheet unreachable";
+      }
+    }
+
     function currentCycleFor(card){
       const today=new Date();
       const upcoming=card.calc(today);
@@ -2101,6 +2188,7 @@
 
       saveLocal();
       renderLogs();
+      refreshBillsTotal();
       closeModal();
       resetForm();
     });
@@ -2241,6 +2329,7 @@
       renderCustomCards();
       renderCardRows();
       updateRecommendation();
+      refreshBillsTotal();
       closeCardEditor();
     });
 
@@ -2353,6 +2442,7 @@
     renderBuiltInCards();
     renderCustomCards();
     renderCardRows();
+    refreshBillsTotal();
     resetForm();
     renderLogs();
     applyTheme();
