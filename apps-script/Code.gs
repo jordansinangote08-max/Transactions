@@ -4,6 +4,7 @@
  * One job: take a transaction from the web app and append it to the sheet.
  *
  *   write  index.html  --POST-->  doPost()  -->  "Transactions" sheet
+ *   delete index.html  --POST-->  doPost(action=delete) --> one row removed
  *   read   index.html  --GET--->  the sheet's published CSV
  *
  * This script knows nothing about any particular bank. Card names, statement
@@ -39,6 +40,11 @@ const SHEET_NAME = "Transactions";
 function doPost(e) {
   try {
     const params = (e && e.parameter) || {};
+
+    if (String(params.action || "").toLowerCase() === "delete") {
+      return doDelete(params);
+    }
+
     const amount = parseMoney(params.amount);
     const card = cleanCard(params.card);
     const note = String(params.note || "Website").trim();
@@ -160,6 +166,58 @@ function saveTransaction(amount, card, note, date) {
       cleanCard(card),
       note
     ]);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * Removes ONE row matching a transaction the web app deleted.
+ *
+ * The sheet has no id column, so the row is identified by date + amount + card +
+ * note. Two genuinely identical transactions are therefore indistinguishable —
+ * a second "120 / Grab / today" looks exactly like the first. The scan runs
+ * bottom-up and stops at the first hit, so the newest match goes and the older
+ * one survives; the total stays right either way, but which row went is not
+ * knowable. That is the accepted cost of having no id to key on.
+ *
+ * It never deletes more than one row, whatever matches.
+ */
+function doDelete(params) {
+  const amount = parseMoney(params.amount);
+  const card = cleanCard(params.card);
+  const note = String(params.note || "").trim().toLowerCase();
+  const dateKey = toDateKey(parseDateInput(params.date));
+
+  if (!Number.isFinite(amount) || !card) {
+    return jsonResponse({ ok: false, error: "Amount and card are required to delete." });
+  }
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+
+  try {
+    const sheet = getTransactionSheet();
+    const rows = sheet.getDataRange().getValues();
+
+    // Bottom-up: row 1 is the header, so stop before it.
+    for (var i = rows.length - 1; i >= 1; i--) {
+      const row = rows[i];
+      if (!row[1] && !row[2]) continue;
+
+      const sameDate = toDateKey(new Date(row[1])) === dateKey;
+      const sameAmount = Math.round(Number(row[2]) * 100) === Math.round(amount * 100);
+      const sameCard = cleanCard(row[3]).toLowerCase() === card.toLowerCase();
+      const sameNote = String(row[4] || "").trim().toLowerCase() === note;
+
+      if (sameDate && sameAmount && sameCard && sameNote) {
+        sheet.deleteRow(i + 1);   // getValues is 0-based, the sheet is 1-based
+        return jsonResponse({ ok: true, deleted: true, row: i + 1 });
+      }
+    }
+
+    // Not an error: the row may have been removed in the spreadsheet already.
+    return jsonResponse({ ok: true, deleted: false, reason: "No matching row." });
   } finally {
     lock.releaseLock();
   }

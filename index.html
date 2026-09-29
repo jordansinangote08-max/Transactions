@@ -2089,7 +2089,7 @@
         ? `${logs.length} in the last 48 hours`
         : "Last 48 hours";
       if(el.historyRetentionNote) el.historyRetentionNote.textContent =
-        "This list keeps 48 hours. Your Google Sheet keeps every transaction — removing one here never removes it there.";
+        "This list keeps 48 hours. Entries aged out stay in your Google Sheet; deleting one here removes it from the sheet too.";
       if(el.clearHistory) el.clearHistory.hidden = !logs.length;
       if(!logs.length) return;
 
@@ -2119,6 +2119,46 @@
       return String(value ?? "").replace(/[&<>"']/g,char=>({
         "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"
       }[char]));
+    }
+
+    /**
+     * Asks the sheet to drop the same transaction.
+     *
+     * The sheet has no id column, so the row is matched on date + amount + card +
+     * note, and the script removes at most one. The local entry is already gone by
+     * the time this runs — the list should not sit waiting on the network — so a
+     * failure here leaves the row in the sheet and is reported rather than hidden.
+     *
+     * Tries a readable request first so a failure can actually be seen. Apps Script
+     * answers a form-encoded POST with CORS headers, but a deployment that does not
+     * allow anonymous access will not; that rejects, and the no-cors retry at least
+     * delivers the request even though its result is unreadable.
+     */
+    async function deleteFromSheet(log){
+      const body=new URLSearchParams({
+        action:"delete",
+        amount:String(log.amount),
+        card:log.cardName||log.card,
+        note:log.note||(log.cardName||log.card),
+        date:log.date
+      });
+
+      try{
+        const response=await fetch(WEB_APP_URL,{method:"POST",body});
+        const result=await response.json();
+        if(!result.ok) throw new Error(result.error||"The script refused it.");
+        if(!result.deleted){
+          console.warn("No matching row in the sheet — it may already be gone.");
+        }
+      }catch(error){
+        console.warn("Readable delete failed, retrying unreadable.",error);
+        // Fire and forget: the request still reaches the script, we just cannot
+        // confirm it. Same path the add-transaction POST already uses.
+        fetch(WEB_APP_URL,{method:"POST",mode:"no-cors",body}).catch(()=>{});
+      }finally{
+        // The cycle totals were computed from a sheet that still had this row.
+        refreshBillsTotal();
+      }
     }
 
     function saveLocal(){
@@ -2199,9 +2239,11 @@
       const {action,id} = button.dataset;
       if(action==="edit") editLog(id);
       if(action==="delete"){
+        const log = logs.find(item=>String(item.id)===String(id));
         logs = logs.filter(item=>String(item.id)!==String(id));
         saveLocal();
         renderLogs();
+        if(log) deleteFromSheet(log);
       }
     });
 
