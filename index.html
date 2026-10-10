@@ -998,6 +998,8 @@
     const CUSTOM_CARDS_KEY = "smartCardAdvisorCustomCards_v1";
     const BUILTIN_OVERRIDES_KEY = "smartCardAdvisorBuiltInOverrides_v1";
     const DELETED_BUILTINS_KEY = "smartCardAdvisorDeletedBuiltIns_v1";
+    // Set once this device has merged its cards into the sheet's shared copy.
+    const CLOUD_SYNCED_KEY = "smartCardAdvisorCloudSynced_v1";
 
     // GitHub Pages logo library. Put matching files inside /assets/logos/ in the repository.
     // Add or remove entries here whenever you add more bank logos.
@@ -1229,7 +1231,8 @@
         date:normalizeSheetDate(entry.date),
         amount:Number(entry.amount)||0,
         card:String(entry.card||"").trim(),
-        note:String(entry.note||"").trim()
+        note:String(entry.note||"").trim(),
+        timestamp:entry.timestamp||""
       }));
     }
 
@@ -1365,6 +1368,7 @@
       el.salaryDayA.value=salarySettings.dayA;
       el.salaryDayB.value=salarySettings.dayB;
       localStorage.setItem(SALARY_KEY,JSON.stringify(salarySettings));
+      saveCloudState("salary");
       el.salaryStatus.textContent="Salary schedule saved. Recommendations updated.";
       updateRecommendation();
       refreshBillsTotal();
@@ -1410,6 +1414,7 @@
 
     function saveCustomCards(){
       localStorage.setItem(CUSTOM_CARDS_KEY,JSON.stringify(customCards));
+      saveCloudState("cards");
     }
 
     function adjustBusinessDate(date,rule){
@@ -1448,10 +1453,12 @@
 
     function saveBuiltInOverrides(){
       localStorage.setItem(BUILTIN_OVERRIDES_KEY,JSON.stringify(builtInOverrides));
+      saveCloudState("cards");
     }
 
     function saveDeletedBuiltIns(){
       localStorage.setItem(DELETED_BUILTINS_KEY,JSON.stringify([...deletedBuiltIns]));
+      saveCloudState("cards");
     }
 
     function builtInCards(){
@@ -1965,6 +1972,7 @@
 
     function openHistorySheet(trigger){
       renderLogs();
+      refreshHistory();
       historyReturnFocus=trigger||document.activeElement;
       revealOverlay(el.historyModal);
       el.historyModal.setAttribute("aria-hidden","false");
@@ -2089,8 +2097,10 @@
         ? `${logs.length} in the last 48 hours`
         : "Last 48 hours";
       if(el.historyRetentionNote) el.historyRetentionNote.textContent =
-        "This list keeps 48 hours. Entries aged out stay in your Google Sheet; deleting one here removes it from the sheet too.";
-      if(el.clearHistory) el.clearHistory.hidden = !logs.length;
+        "Transactions written to your Google Sheet in the last 48 hours, from any device or the iPhone Shortcut. Older ones stay in the sheet; editing or deleting here changes the sheet too.";
+      // The list is the sheet's last 48 hours; clearing it here would only be undone
+      // by the next reload, so the button stays hidden.
+      if(el.clearHistory) el.clearHistory.hidden = true;
       if(!logs.length) return;
 
       logs.forEach(log=>{
@@ -2201,30 +2211,22 @@
         return;
       }
 
+      const cardName = selectedCardRecord?.name||card;
       if(editingId){
-        const log = logs.find(item=>item.id===editingId);
+        const log = logs.find(item=>String(item.id)===String(editingId));
         if(log){
-          log.amount = amount;
-          log.date = date;
-          log.card = card;
-          log.note = note;
+          const previous = {...log};
+          Object.assign(log,{amount,date,card,cardName,note});
+          // The sheet has no row ids, so an edit removes the old row and writes
+          // the new one, then the list reloads from the sheet.
+          deleteFromSheet(previous)
+            .then(()=>postTransaction(log,selectedCardRecord))
+            .then(refreshHistory);
         }
       }else{
-        logs.unshift({id:Date.now(),addedAt:Date.now(),amount,date,card,cardName:selectedCardRecord?.name||card,note});
-        fetch(WEB_APP_URL,{
-          method:"POST",
-          mode:"no-cors",
-          // The sheet records the card by the name you gave it, not by its internal
-          // id — "MariBank", not CUSTOM_1790355986367. The id stays the key inside
-          // the app; only what leaves for the sheet changes.
-          body:new URLSearchParams({
-            amount:String(amount),
-            card:selectedCardRecord?.name||card,
-            note:note||card,
-            date,
-            last4:selectedCardRecord?.last4||""
-          })
-        }).catch(()=>{});
+        const log = {id:Date.now(),addedAt:Date.now(),amount,date,card,cardName,note};
+        logs.unshift(log);
+        postTransaction(log,selectedCardRecord).then(refreshHistory);
       }
 
       saveLocal();
@@ -2238,13 +2240,14 @@
       const button = event.target.closest("[data-id]");
       if(!button) return;
       const {action,id} = button.dataset;
-      if(action==="edit") editLog(id);
+      // The edit form sits under the history sheet; close the sheet so it shows.
+      if(action==="edit"){closeHistorySheet();editLog(id)}
       if(action==="delete"){
         const log = logs.find(item=>String(item.id)===String(id));
         logs = logs.filter(item=>String(item.id)!==String(id));
         saveLocal();
         renderLogs();
-        if(log) deleteFromSheet(log);
+        if(log) deleteFromSheet(log).then(refreshHistory);
       }
     });
 
@@ -2456,6 +2459,139 @@
     el.statementModal.addEventListener("click",event=>{if(event.target===el.statementModal) closeStatementModal()});
 
     // ============================================================
+    // CLOUD — cards, salary schedule and history live in the Google Sheet
+    // ============================================================
+    //
+    // Every device loads the same state from the sheet on open and writes it back
+    // on each change; localStorage is only a cache so the page draws instantly and
+    // still works offline. Last write wins.
+
+    function cloudStateValue(key){
+      if(key==="cards") return {customCards,builtInOverrides,deletedBuiltIns:[...deletedBuiltIns]};
+      return salarySettings;
+    }
+
+    function saveCloudState(key){
+      const body=new URLSearchParams({action:"saveState",key,value:JSON.stringify(cloudStateValue(key))});
+      return fetch(WEB_APP_URL,{method:"POST",body})
+        .then(response=>response.json())
+        .then(result=>{if(!result.ok) throw new Error(result.error||"The script refused it.")})
+        .catch(error=>{
+          // Unreadable answer (or a network blip): send it anyway, blind.
+          console.warn(`Saving ${key} to the sheet failed, retrying unreadable.`,error);
+          return fetch(WEB_APP_URL,{method:"POST",mode:"no-cors",body}).catch(()=>{});
+        });
+    }
+
+    /**
+     * Adopts the sheet's cards and salary schedule. The first device to open
+     * after this change has nothing in the sheet yet, so it uploads its own —
+     * that becomes the shared copy every other device then loads.
+     */
+    async function loadCloudState(){
+      const response=await fetch(`${WEB_APP_URL}?action=state&_=${Date.now()}`,{cache:"no-store",redirect:"follow"});
+      const payload=await response.json();
+      if(!payload||!payload.ok) throw new Error(payload&&payload.error||"No state returned");
+      const state=payload.state||{};
+
+      if(state.cards){
+        const cloudCards=Array.isArray(state.cards.customCards)?state.cards.customCards:[];
+        const cloudOverrides=state.cards.builtInOverrides&&typeof state.cards.builtInOverrides==="object"?state.cards.builtInOverrides:{};
+        const cloudDeleted=Array.isArray(state.cards.deletedBuiltIns)?state.cards.deletedBuiltIns:[];
+
+        // A device's first sync merges in the cards only it had, so whichever
+        // device happened to upload first doesn't wipe the others'. From then on
+        // the sheet's copy wins, so a card deleted elsewhere stays deleted.
+        const firstSync=!localStorage.getItem(CLOUD_SYNCED_KEY);
+        let merged=false;
+        if(firstSync){
+          customCards.forEach(card=>{
+            if(cloudCards.some(item=>item.id===card.id||item.last4===card.last4)) return;
+            cloudCards.push(card);
+            merged=true;
+          });
+          Object.keys(builtInOverrides).forEach(id=>{
+            if(cloudOverrides[id]) return;
+            cloudOverrides[id]=builtInOverrides[id];
+            merged=true;
+          });
+          deletedBuiltIns.forEach(id=>{
+            if(cloudDeleted.includes(id)) return;
+            cloudDeleted.push(id);
+            merged=true;
+          });
+        }
+
+        customCards=cloudCards;
+        builtInOverrides=cloudOverrides;
+        deletedBuiltIns=new Set(cloudDeleted);
+        localStorage.setItem(CUSTOM_CARDS_KEY,JSON.stringify(customCards));
+        localStorage.setItem(BUILTIN_OVERRIDES_KEY,JSON.stringify(builtInOverrides));
+        localStorage.setItem(DELETED_BUILTINS_KEY,JSON.stringify([...deletedBuiltIns]));
+        if(merged) await saveCloudState("cards");
+      }else{
+        await saveCloudState("cards");
+      }
+      localStorage.setItem(CLOUD_SYNCED_KEY,"1");
+
+      if(state.salary&&typeof state.salary==="object"){
+        localStorage.setItem(SALARY_KEY,JSON.stringify({...salarySettings,...state.salary}));
+      }else if(localStorage.getItem(SALARY_KEY)){
+        // Only a schedule someone actually saved; never the defaults of a fresh device.
+        await saveCloudState("salary");
+      }
+
+      loadSalarySettings();
+      renderBuiltInCards();
+      renderCustomCards();
+      renderCardRows();
+      updateRecommendation();
+      refreshBillsTotal();
+    }
+
+    function postTransaction(log,cardRecord){
+      // The sheet records the card by the name you gave it, not by its internal
+      // id — "MariBank", not CUSTOM_1790355986367.
+      return fetch(WEB_APP_URL,{
+        method:"POST",
+        mode:"no-cors",
+        body:new URLSearchParams({
+          amount:String(log.amount),
+          card:log.cardName,
+          note:log.note||log.cardName,
+          date:log.date,
+          last4:cardRecord?.last4||""
+        })
+      }).catch(()=>{});
+    }
+
+    /** The history list: rows the sheet received in the last 48 hours, newest first. */
+    async function refreshHistory(){
+      try{
+        const rows=await fetchRowsFromScript();
+        const cutoff=Date.now()-HISTORY_RETENTION_MS;
+        const cards=allCards();
+        logs=rows
+          .map(row=>({...row,addedAt:Date.parse(row.timestamp)}))
+          .filter(row=>Number.isFinite(row.addedAt)&&row.addedAt>=cutoff)
+          .sort((a,b)=>b.addedAt-a.addedAt)
+          .map((row,index)=>{
+            const card=cards.find(item=>matchesCard(row.card,item));
+            return {
+              id:`${row.addedAt}_${index}`,addedAt:row.addedAt,
+              amount:row.amount,date:row.date,
+              card:card?card.id:row.card,cardName:card?card.name:row.card,
+              note:row.note
+            };
+          });
+        saveLocal();
+        renderLogs();
+      }catch(error){
+        console.warn("Could not load history from the sheet; showing this device's copy.",error);
+      }
+    }
+
+    // ============================================================
     // CARDS SHEET — shared with the iPhone Shortcut (apps-script/Code.gs)
     // ============================================================
 
@@ -2546,9 +2682,12 @@
     resetForm();
     renderLogs();
     applyTheme();
-    importShortcutCards()
+    loadCloudState()
+      .catch(error=>console.warn("Could not load cards and settings from the sheet; using this device's copy.",error))
+      .then(()=>importShortcutCards())
       .catch(error=>console.warn("Could not read cards from the sheet",error))
       .finally(syncCardsToSheet);
+    refreshHistory();
   </script>
 </body>
 </html>
