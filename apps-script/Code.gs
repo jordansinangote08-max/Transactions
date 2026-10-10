@@ -19,11 +19,13 @@
  *
  * Sheet layout — column order is a contract, do not reorder:
  *
- *   A Timestamp | B Date | C Amount | D Card | E Note
+ *   A Timestamp | B Date | C Amount | D Card | E Note | F Last4
  *
- * Writes are exactly these five columns. appendRow places values by position,
- * so a sixth entry would spill into column F; if you ever add a column of your
- * own there, it stays yours.
+ * Last4 is found by its header, not its position: it goes in F when F is free,
+ * otherwise after the last used column, so a column of your own is never
+ * overwritten (see getLast4Column). Rows written before it existed are filled
+ * in from the Cards sheet by card name whenever the web app syncs its cards
+ * (fillMissingLast4).
  *
  * The published CSV's header row must keep the names Date, Amount, Card and
  * Note, because index.html looks columns up by header name rather than index.
@@ -86,7 +88,7 @@ function doPost(e) {
       });
     }
 
-    saveTransaction(amount, card, note, date);
+    saveTransaction(amount, card, note, date, params.last4);
 
     return jsonResponse({ ok: true, amount: amount, card: card, date: date });
   } catch (error) {
@@ -178,19 +180,113 @@ function getTransactionSheet() {
  * write is serialised — without the lock one of them silently overwrites the
  * other.
  */
-function saveTransaction(amount, card, note, date) {
+function saveTransaction(amount, card, note, date, last4) {
   const lock = LockService.getScriptLock();
   lock.waitLock(20000);
 
   try {
-    // Exactly five values, columns A-E. Nothing this script writes goes past E.
-    getTransactionSheet().appendRow([
-      new Date(),
-      date ? new Date(date) : new Date(),
-      Number(amount),
-      cleanCard(card),
-      note
-    ]);
+    appendTransaction(date ? new Date(date) : new Date(), amount, card, note, last4);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * Appends A-E, then the card's last 4 under the Last4 header. Without a last 4
+ * from the caller it is looked up on the Cards sheet by card name. Callers hold
+ * the script lock.
+ */
+function appendTransaction(date, amount, card, note, last4) {
+  const sheet = getTransactionSheet();
+  const name = cleanCard(card);
+  const digits = last4Of(last4) || last4ForCardName(name);
+
+  sheet.appendRow([new Date(), date, Number(amount), name, note]);
+
+  if (digits) {
+    sheet.getRange(sheet.getLastRow(), getLast4Column(sheet)).setValue(digits);
+  }
+}
+
+/**
+ * The Last4 column's number, adding the header if it is not there yet: in F
+ * when F is empty, otherwise in the first column after the used ones. Plain
+ * text, so "0123" keeps its leading zero.
+ */
+function getLast4Column(sheet) {
+  const width = Math.max(sheet.getLastColumn(), 5);
+  const headers = sheet.getRange(1, 1, 1, width).getValues()[0];
+
+  for (var i = 0; i < headers.length; i++) {
+    if (String(headers[i]).trim().toLowerCase() === "last4") return i + 1;
+  }
+
+  const column = String(headers[5] === undefined ? "" : headers[5]).trim() === "" &&
+    sheet.getRange(1, 6, Math.max(sheet.getLastRow(), 1), 1).getValues()
+      .every(function (row) { return row[0] === ""; })
+    ? 6
+    : width + 1;
+
+  sheet.getRange(1, column, sheet.getMaxRows(), 1).setNumberFormat("@");
+  sheet.getRange(1, column).setValue("Last4");
+  return column;
+}
+
+/** Card name or id → last 4, from the Cards sheet. */
+function last4ByCard() {
+  const map = {};
+  readCards().forEach(function (card) {
+    if (!card.last4) return;
+    [card.name, card.id].forEach(function (key) {
+      key = cleanCard(key).toLowerCase();
+      if (key && !map[key]) map[key] = card.last4;
+    });
+  });
+  return map;
+}
+
+function last4ForCardName(name) {
+  return last4ByCard()[cleanCard(name).toLowerCase()] || "";
+}
+
+/**
+ * Fills Last4 on every row that has a card but no last 4 yet, by matching the
+ * Card cell (a card's name, or the id older rows carry, like "EW") against the
+ * Cards sheet. Rows for a card the sheet does not know stay blank until it
+ * does. Returns how many rows were filled. Callers hold the script lock.
+ */
+function fillMissingLast4() {
+  const sheet = getTransactionSheet();
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return 0;
+
+  const column = getLast4Column(sheet);
+  const cards = sheet.getRange(2, 4, lastRow - 1, 1).getValues();
+  const range = sheet.getRange(2, column, lastRow - 1, 1);
+  const values = range.getValues();
+  const map = last4ByCard();
+  let filled = 0;
+
+  for (var i = 0; i < values.length; i++) {
+    if (String(values[i][0]).trim() !== "") continue;
+    const digits = map[cleanCard(cards[i][0]).toLowerCase()];
+    if (digits) {
+      values[i][0] = digits;
+      filled++;
+    }
+  }
+
+  if (filled) range.setValues(values);
+  return filled;
+}
+
+/** Run from the Apps Script editor to backfill Last4 by hand. */
+function backfillLast4() {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+
+  try {
+    console.log("Filled Last4 on " + fillMissingLast4() + " rows.");
   } finally {
     lock.releaseLock();
   }
@@ -427,7 +523,7 @@ function handleWebhook(e) {
     }
 
     // Already under the lock, so append directly rather than via saveTransaction.
-    getTransactionSheet().appendRow([new Date(), date, Number(amount), card.name, rowNote]);
+    appendTransaction(date, amount, card.name, rowNote, card.last4 || knownLast4);
 
     return jsonResponse({
       ok: true, code: 201, status: "logged",
@@ -669,7 +765,10 @@ function syncCards(params) {
       }
     });
 
-    return jsonResponse({ ok: true, cards: readCards() });
+    // Every name the app knows now has a last 4 here, so older rows can get theirs.
+    const filled = fillMissingLast4();
+
+    return jsonResponse({ ok: true, cards: readCards(), last4_filled: filled });
   } finally {
     lock.releaseLock();
   }

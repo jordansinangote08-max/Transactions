@@ -2221,7 +2221,8 @@
             amount:String(amount),
             card:selectedCardRecord?.name||card,
             note:note||card,
-            date
+            date,
+            last4:selectedCardRecord?.last4||""
           })
         }).catch(()=>{});
       }
