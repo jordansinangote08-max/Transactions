@@ -48,8 +48,10 @@ function doPost(e) {
   try {
     const params = (e && e.parameter) || {};
 
-    // Only the iOS Shortcut sends a JSON body; the web app sends form fields.
-    if (isJsonBody(e)) {
+    // The iOS Shortcut sends a JSON body with ?token= on the URL; the web app
+    // sends form fields and never a token. A token without an action is also
+    // the Shortcut, posting its fields as a form instead of JSON.
+    if (isJsonBody(e) || (params.token && !params.action)) {
       return handleWebhook(e);
     }
 
@@ -464,35 +466,46 @@ function isJsonBody(e) {
 }
 
 function handleWebhook(e) {
-  let body;
-  try {
-    body = JSON.parse(e.postData.contents);
-  } catch (error) {
-    return jsonResponse({ ok: false, code: 400, error: "Body is not valid JSON." });
-  }
-  body = body && typeof body === "object" ? body : {};
+  const params = (e && e.parameter) || {};
+  const body = readWebhookBody(e);
 
-  const token = (e.parameter && e.parameter.token) || body.token;
+  const token = params.token || body.token;
   if (!isValidToken(token)) {
     return jsonResponse({ ok: false, code: 401, error: "Unauthorized." });
   }
 
-  const amount = parseMoney(body.amount);
-  const last4 = String(body.last4 || "").replace(/\D/g, "");
-  const bank = cleanCard(body.bank).slice(0, 40);
-  const note = cleanCard(body.note).slice(0, 120);
+  // Every 400 echoes what arrived, minus the token, so it can be read on the phone.
+  const badRequest = function (message) {
+    const received = {};
+    Object.keys(body).forEach(function (key) {
+      if (key !== "token") received[key] = body[key];
+    });
+    const post = e && e.postData;
+    return jsonResponse({
+      ok: false, code: 400, error: message,
+      received: received,
+      content_type: post ? String(post.type || "") : "(no body)",
+      // The raw body too, unless the token travelled in it.
+      raw: post && post.contents && !body.token ? String(post.contents).slice(0, 500) : ""
+    });
+  };
+
+  const amount = parseAmount(body.amount);
+  const last4 = String(firstValue(body.last4)).replace(/\D/g, "");
+  const bank = cleanCard(firstValue(body.bank)).slice(0, 40);
+  const note = cleanCard(firstValue(body.note)).slice(0, 120);
 
   if (!Number.isFinite(amount) || amount <= 0) {
-    return jsonResponse({ ok: false, code: 400, error: "amount must be a number greater than zero." });
+    return badRequest("amount must be a number greater than zero.");
   }
   // Anything but exactly four digits counts as no last 4.
   const knownLast4 = last4.length === 4 ? last4 : "";
 
   if (!knownLast4 && !bank) {
-    return jsonResponse({ ok: false, code: 400, error: "Send last4 or bank, so the card can be found." });
+    return badRequest("Send last4 or bank, so the card can be found.");
   }
 
-  let purchasedAt = new Date(String(body.timestamp || ""));
+  let purchasedAt = new Date(String(firstValue(body.timestamp)));
   if (isNaN(purchasedAt.getTime())) purchasedAt = new Date();
 
   // Midnight of the purchase day in the script's timezone — what the web app's
@@ -536,6 +549,45 @@ function handleWebhook(e) {
   } finally {
     lock.releaseLock();
   }
+}
+
+/**
+ * The Shortcut's fields: JSON.parse(e.postData.contents), or e.parameter when
+ * there is no body or it is not a JSON object (a Shortcut set to send a form).
+ */
+function readWebhookBody(e) {
+  const post = e && e.postData;
+
+  if (post && post.contents) {
+    try {
+      const parsed = JSON.parse(post.contents);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+    } catch (error) {
+      // Not JSON; fall through to the form fields.
+    }
+  }
+
+  return (e && e.parameter) || {};
+}
+
+/** Shortcuts' "Match Text" yields a list; take its first item. */
+function firstValue(value) {
+  if (Array.isArray(value)) value = value[0];
+  return value === null || value === undefined ? "" : value;
+}
+
+/**
+ * The amount as the Shortcut sends it: a number, or a string like "454.00",
+ * "1,250.50", "₱454", "PHP 454.00" or "Php454". Commas and any currency text
+ * are dropped and the first number in what remains is parsed. NaN when there
+ * is none.
+ */
+function parseAmount(value) {
+  value = firstValue(value);
+  if (typeof value === "number") return value;
+
+  const match = /\d+(?:\.\d+)?|\.\d+/.exec(String(value).replace(/,/g, ""));
+  return match ? parseFloat(match[0]) : NaN;
 }
 
 /** Constant-time comparison against the WEBHOOK_SECRET script property. */
