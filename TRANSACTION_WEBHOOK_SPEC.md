@@ -49,11 +49,23 @@ All values are strings.
 
 ### Row written to Transactions
 
-Same five columns the web app writes:
+Same columns the web app writes:
 
-| Timestamp | Date | Amount | Card | Note |
-|---|---|---|---|---|
-| when the row was written | purchase day, midnight | `454` | card name | `note`, or the card name |
+| Timestamp | Date | Amount | Card | Note | Last4 |
+|---|---|---|---|---|---|
+| when the row was written | purchase day, midnight | `454` | card name | `note`, or the card name | the card's last 4 |
+
+**Last4 column.** Added automatically the first time it's needed: in column F
+when F is empty, otherwise after the last used column, so nothing of yours is
+overwritten. It's plain text, so `0469` keeps its zero. Every new row gets the
+card's last 4, whether it comes from the Shortcut or the web app. It stays
+blank only for a card with no last 4 yet (one created from a bank name alone).
+
+**Older rows** without a last 4 are filled in automatically each time the web
+app opens (when it syncs its cards): the Card cell is matched to a card on the
+Cards tab by name, or by the old ids some rows carry (`EW`, `UB`, `RCBC`). Rows
+for a card that no longer exists stay blank. To run it by hand, pick
+`backfillLast4` in the Apps Script editor and click Run.
 
 ### Processing
 
