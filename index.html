@@ -2342,9 +2342,12 @@
       if(!name){el.cardEditorStatus.textContent="Enter the card name.";return}
       if(!/^\d{4}$/.test(last4)){el.cardEditorStatus.textContent="Enter exactly four card digits.";return}
 
+      const existingCard=editingCustomCardId?cardById(editingCustomCardId):null;
       const record={
         id:editingCustomCardId||`CUSTOM_${Date.now()}`,
         name,last4,logo:pendingCustomLogo,
+        // Cards the iPhone Shortcut created remember the bank it named.
+        ...(existingCard?.bank?{bank:existingCard.bank}:{}),
         statementDay:Number(el.customStatementDay.value),
         statementAdjust:el.customStatementAdjust.value,
         dueMethod:el.customDueMethod.value,
@@ -2373,6 +2376,7 @@
       updateRecommendation();
       refreshBillsTotal();
       closeCardEditor();
+      syncCardsToSheet();
     });
 
     function resetDeleteButton(){
@@ -2407,6 +2411,8 @@
       }
 
       if(String(selected)===normalizedId) selected="";
+      // So the iPhone Shortcut stops logging to a card that no longer exists here.
+      fetch(WEB_APP_URL,{method:"POST",mode:"no-cors",body:new URLSearchParams({action:"deleteCard",id:normalizedId})}).catch(()=>{});
       closeCardEditor();
       renderBuiltInCards();
       renderCustomCards();
@@ -2448,6 +2454,57 @@
     el.closeStatementModal.addEventListener("click",closeStatementModal);
     el.statementModal.addEventListener("click",event=>{if(event.target===el.statementModal) closeStatementModal()});
 
+    // ============================================================
+    // CARDS SHEET — shared with the iPhone Shortcut (apps-script/Code.gs)
+    // ============================================================
+
+    // The bank a card belongs to: what the Shortcut named for cards it created,
+    // otherwise the logo picked, otherwise the card's name.
+    function cardBank(card){
+      if(card.bank) return card.bank;
+      const logo=LOGO_LIBRARY.find(item=>item.src===card.logo);
+      return logo?logo.name:card.name;
+    }
+
+    function logoForBank(bank){
+      const key=String(bank||"").toUpperCase().replace(/[^A-Z0-9]/g,"");
+      return LOGO_LIBRARY.find(item=>item.name.toUpperCase().replace(/[^A-Z0-9]/g,"")===key)?.src||"";
+    }
+
+    // The Shortcut finds cards by last 4 on the sheet, so the sheet needs this
+    // device's list. Rows the app does not send are left alone by the script.
+    function syncCardsToSheet(){
+      const payload=allCards().map(card=>({id:card.id,name:card.name,last4:card.last4,bank:cardBank(card)}));
+      return fetch(WEB_APP_URL,{method:"POST",mode:"no-cors",body:new URLSearchParams({action:"syncCards",payload:JSON.stringify(payload)})})
+        .catch(error=>console.warn("Card sync failed",error));
+    }
+
+    // Cards the Shortcut created for a last 4 it had not seen. They arrive with
+    // only a name and last 4; the schedule is a placeholder to set in the editor.
+    async function importShortcutCards(){
+      const response=await fetch(`${WEB_APP_URL}?action=cards&_=${Date.now()}`,{cache:"no-store",redirect:"follow"});
+      const payload=await response.json();
+      if(!payload||!payload.ok) throw new Error(payload&&payload.error||"No cards returned");
+
+      const local=allCards();
+      const added=(payload.cards||[]).filter(sheetCard=>
+        sheetCard.source==="shortcut"&&!local.some(card=>card.id===sheetCard.id||(sheetCard.last4&&card.last4===sheetCard.last4))
+      );
+      if(!added.length) return;
+
+      added.forEach(sheetCard=>customCards.push({
+        id:sheetCard.id,name:sheetCard.name,last4:sheetCard.last4,bank:sheetCard.bank,
+        logo:logoForBank(sheetCard.bank),
+        statementDay:10,statementAdjust:"keep",dueMethod:"calendar_days",dueValue:17,dueAdjust:"next",safetyDays:7,
+        creditLimit:null
+      }));
+      saveCustomCards();
+      renderCustomCards();
+      renderCardRows();
+      updateRecommendation();
+      refreshBillsTotal();
+    }
+
     function applyTheme(){
       const theme = localStorage.getItem(THEME_KEY) || (matchMedia("(prefers-color-scheme:dark)").matches ? "dark" : "light");
       document.documentElement.dataset.theme = theme;
@@ -2488,6 +2545,9 @@
     resetForm();
     renderLogs();
     applyTheme();
+    importShortcutCards()
+      .catch(error=>console.warn("Could not read cards from the sheet",error))
+      .finally(syncCardsToSheet);
   </script>
 </body>
 </html>
