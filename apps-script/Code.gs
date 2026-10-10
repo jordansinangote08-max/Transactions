@@ -7,6 +7,8 @@
  *   delete index.html  --POST-->  doPost(action=delete) --> one row removed
  *   read   index.html  --GET--->  the sheet's published CSV
  *   cards  index.html  --POST-->  doPost(action=syncCards) --> "Cards" sheet
+ *   state  index.html  --POST-->  doPost(action=saveState) --> "Settings" sheet
+ *          index.html  --GET--->  ?action=state  (cards, salary schedule)
  *   auto   iOS Shortcut --POST JSON--> doPost() --> handleWebhook() --> one row
  *
  * The iOS Shortcut path is the only one that needs a secret: the WEBHOOK_SECRET
@@ -67,6 +69,10 @@ function doPost(e) {
 
     if (action === "deletecard") {
       return deleteCard(params);
+    }
+
+    if (action === "savestate") {
+      return saveState(params);
     }
 
     const amount = parseMoney(params.amount);
@@ -130,7 +136,10 @@ function doGet(e) {
             date: toDateKey(entry.date),
             amount: entry.amount,
             card: entry.card,
-            note: entry.note
+            note: entry.note,
+            // When the row was written — the web app's history shows the last 48 hours.
+            timestamp: entry.timestamp ? entry.timestamp.toISOString() : "",
+            last4: entry.last4
           };
         });
 
@@ -139,6 +148,10 @@ function doGet(e) {
 
     if (action === "cards") {
       return jsonResponse({ ok: true, cards: readCards() });
+    }
+
+    if (action === "state") {
+      return jsonResponse({ ok: true, state: readState() });
     }
 
     return jsonResponse({
@@ -349,17 +362,25 @@ function doDelete(params) {
 /** Every data row as {date, amount, card, note}, header row dropped. */
 function readTransactions() {
   const rows = getTransactionSheet().getDataRange().getValues();
+  const headers = rows[0] || [];
+  let last4Index = -1;
+  for (var i = 0; i < headers.length; i++) {
+    if (String(headers[i]).trim().toLowerCase() === "last4") last4Index = i;
+  }
 
   return rows.slice(1)
     .filter(function (row) {
       return row[1] !== "" && row[2] !== "";
     })
     .map(function (row) {
+      const written = row[0] instanceof Date ? row[0] : new Date(row[0]);
       return {
+        timestamp: isNaN(written.getTime()) ? null : written,
         date: new Date(row[1]),
         amount: Number(row[2]),
         card: cleanCard(row[3]),
-        note: row[4]
+        note: row[4],
+        last4: last4Index === -1 ? "" : last4Of(row[last4Index])
       };
     });
 }
@@ -836,6 +857,95 @@ function deleteCard(params) {
     const row = findCardRow(sheet, params.id);
     if (row) sheet.deleteRow(row);
     return jsonResponse({ ok: true, deleted: !!row });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+
+
+// ============================================================
+// APP STATE (cards and salary schedule, shared by every device)
+// ============================================================
+
+/**
+ * The web app used to keep its cards and salary schedule only in the browser,
+ * so each phone or computer had its own. They now live here, one JSON value
+ * per key, and every device loads them on open and saves them on change.
+ *
+ *   A Key | B Value (JSON) | C Updated
+ *
+ *   cards   {customCards, builtInOverrides, deletedBuiltIns}
+ *   salary  {frequency, day1, dayA, dayB, weekday}
+ *
+ * Last write wins. Like the app's other writes, this is not authenticated.
+ */
+const SETTINGS_SHEET = "Settings";
+const STATE_KEYS = ["cards", "salary"];
+const MAX_STATE_CHARS = 45000;   // a Sheets cell holds 50,000
+
+function getSettingsSheet() {
+  const book = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = book.getSheetByName(SETTINGS_SHEET);
+
+  if (!sheet) {
+    sheet = book.insertSheet(SETTINGS_SHEET);
+    sheet.appendRow(["Key", "Value", "Updated"]);
+    sheet.setFrozenRows(1);
+    sheet.getRange("B:B").setNumberFormat("@");
+  }
+  return sheet;
+}
+
+function readState() {
+  const state = {};
+
+  getSettingsSheet().getDataRange().getValues().slice(1).forEach(function (row) {
+    const key = String(row[0]);
+    if (STATE_KEYS.indexOf(key) === -1 || row[1] === "") return;
+    try {
+      state[key] = JSON.parse(row[1]);
+    } catch (error) {
+      console.warn("Settings value for " + key + " is not JSON; ignored.");
+    }
+  });
+
+  return state;
+}
+
+function saveState(params) {
+  const key = String(params.key || "");
+  const value = String(params.value || "");
+
+  if (STATE_KEYS.indexOf(key) === -1) {
+    return jsonResponse({ ok: false, error: "Unknown key: " + key });
+  }
+  if (value.length > MAX_STATE_CHARS) {
+    return jsonResponse({ ok: false, error: "Value too large." });
+  }
+  try {
+    JSON.parse(value);
+  } catch (error) {
+    return jsonResponse({ ok: false, error: "Value must be JSON." });
+  }
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+
+  try {
+    const sheet = getSettingsSheet();
+    const keys = sheet.getRange(1, 1, Math.max(sheet.getLastRow(), 1), 1).getValues();
+    let row = 0;
+    for (var i = 1; i < keys.length; i++) {
+      if (String(keys[i][0]) === key) row = i + 1;
+    }
+
+    if (row) {
+      sheet.getRange(row, 2, 1, 2).setValues([[value, new Date()]]);
+    } else {
+      sheet.appendRow([key, value, new Date()]);
+    }
+    return jsonResponse({ ok: true, key: key });
   } finally {
     lock.releaseLock();
   }
