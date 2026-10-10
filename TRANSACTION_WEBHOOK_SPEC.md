@@ -5,9 +5,11 @@
 An iOS 27 Shortcut fires when a bank app shows a purchase notification on the
 iPhone, extracts the details, and POSTs them to this app. The app:
 
-1. finds the card by its **last 4 digits** and logs the transaction to it;
-2. if no card has that last 4, **creates a card** from the bank name + last 4,
-   then logs the transaction to it.
+1. finds the card by its **last 4 digits**;
+2. if there is no last 4, or no card has it, finds the card whose **name is
+   nearest to the bank** the Shortcut sent;
+3. if nothing matches, **creates a card** from the bank name (+ last 4),
+   then logs the transaction to it. See [Card resolution](#card-resolution).
 
 ## How it fits this app
 
@@ -41,8 +43,8 @@ All values are strings.
 |---|---|
 | `timestamp` | ISO 8601 time of the purchase. Missing or invalid → now. |
 | `amount` | Required, > 0. Commas and `₱` are tolerated. |
-| `last4` | Required, exactly 4 digits. |
-| `bank` | Names a new card; breaks a tie if two cards share a last 4. |
+| `last4` | Optional. Anything but exactly 4 digits counts as missing. |
+| `bank` | Matched against card names when the last 4 doesn't find a card; names a new card. |
 | `note` | Merchant. Empty → the card's name, like rows entered by hand. |
 
 ### Row written to Transactions
@@ -56,15 +58,40 @@ Same five columns the web app writes:
 ### Processing
 
 1. `token` must equal `WEBHOOK_SECRET` (constant-time compare) → else `401`.
-2. `amount` > 0 and `last4` 4 digits → else `400`.
-3. Find the card on the Cards tab by last 4. If several share it, prefer the one
-   whose bank matches `bank`.
-4. None → add a card `"<bank> ••<last4>"` (e.g. `BPI ••1234`), source `shortcut`.
-   The web app adds it to its card list on its next load, with a placeholder
-   statement/due schedule to set in the card editor.
+2. `amount` > 0, and at least one of `last4` / `bank` → else `400`.
+3. Resolve the card (below).
+4. None → add a card, source `shortcut`: `"<bank> ••<last4>"` (e.g. `BPI ••1234`)
+   when there is a last 4, otherwise just `"<bank>"`. The web app adds it to its
+   card list on its next load, with a placeholder statement/due schedule (and,
+   without a last 4, no digits) to set in the card editor.
 5. Same card + amount + note + day already written in the last 2 minutes → `duplicate`
    (iOS can fire one notification twice).
 6. Append the row.
+
+### Card resolution
+
+Cards are looked up on the Cards tab, in this order:
+
+1. **Last 4.** When `last4` is given and a card has it, that card. If two
+   cards share it, the one whose name or bank is nearest to `bank`.
+2. **Nearest name.** When there is no last 4, or no card has it, the card
+   whose name is nearest to `bank`. Names are compared ignoring case, spaces
+   and punctuation, and scored:
+
+   | Score | Rule | Example (`bank` → card name) |
+   |---|---|---|
+   | 4 | Same | `Union Bank` → `UnionBank` |
+   | 3 | One starts with the other | `BDO` → `BDO Gold` |
+   | 2 | One contains the other | `Gold` → `BDO Gold` |
+   | 1 | 1–2 typos, names of 5+ characters only | `Eastwset` → `EastWest` |
+
+   Highest score wins; on a tie, the shortest name. Short names never
+   fuzzy-match each other, so `BPI` does not match `BDO`.
+3. **Nothing matched** → create a card (step 4 above).
+
+Note that an unknown last 4 still falls through to the name: a new EastWest
+card sent with `"last4":"1234","bank":"EastWest"` logs to the existing
+`EastWest` card rather than creating `EastWest ••1234`.
 
 ### Responses
 
@@ -115,7 +142,9 @@ curl -L "https://script.google.com/macros/s/AKfycbyndwZXzpAAx2voFy8yvQEjr-0DC7Nz
 | Last 4 of an existing card | `logged`, `card_created: false` |
 | New last 4 | `logged`, `card_created: true`; card appears in the app on next load |
 | Same request again within 2 minutes | `duplicate` |
-| `last4` missing or not 4 digits | `code: 400` |
+| No `last4`, `bank` near an existing card name | `logged` to that card |
+| No `last4`, `bank` matching no card | `logged`, `card_created: true`, card named `<bank>` |
+| Neither `last4` nor `bank` | `code: 400` |
 | Wrong or missing token | `code: 401` |
 | `amount` missing or `0` | `code: 400` |
 

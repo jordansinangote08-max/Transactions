@@ -2488,7 +2488,7 @@
 
       const local=allCards();
       const added=(payload.cards||[]).filter(sheetCard=>
-        sheetCard.source==="shortcut"&&!local.some(card=>card.id===sheetCard.id||card.last4===sheetCard.last4)
+        sheetCard.source==="shortcut"&&!local.some(card=>card.id===sheetCard.id||(sheetCard.last4&&card.last4===sheetCard.last4))
       );
       if(!added.length) return;
 

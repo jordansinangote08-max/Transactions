@@ -348,9 +348,10 @@ function toDateKey(date) {
  * the web app writes: Timestamp now, Date the purchase day at midnight, Card
  * the card's name, Note the merchant (or the card name when there is none).
  *
- * The card is found by last 4 on the "Cards" sheet, which the web app keeps
- * in step with its own list. A last 4 nobody has seen gets a new card,
- * "<bank> ••<last4>", which the web app adds to its list on its next load.
+ * The card is resolved against the "Cards" sheet, which the web app keeps in
+ * step with its own list (see resolveCard): by last 4, else by the card name
+ * nearest to "bank", else a new card — "<bank> ••<last4>", or just "<bank>"
+ * without a last 4 — which the web app adds to its list on its next load.
  *
  * Apps Script always answers HTTP 200, so the outcome is in "code" / "status".
  */
@@ -388,8 +389,11 @@ function handleWebhook(e) {
   if (!Number.isFinite(amount) || amount <= 0) {
     return jsonResponse({ ok: false, code: 400, error: "amount must be a number greater than zero." });
   }
-  if (last4.length !== 4) {
-    return jsonResponse({ ok: false, code: 400, error: "last4 must be exactly 4 digits." });
+  // Anything but exactly four digits counts as no last 4.
+  const knownLast4 = last4.length === 4 ? last4 : "";
+
+  if (!knownLast4 && !bank) {
+    return jsonResponse({ ok: false, code: 400, error: "Send last4 or bank, so the card can be found." });
   }
 
   let purchasedAt = new Date(String(body.timestamp || ""));
@@ -403,11 +407,16 @@ function handleWebhook(e) {
   lock.waitLock(20000);
 
   try {
-    let card = findCardByLast4(last4, bank);
+    let card = resolveCard(knownLast4, bank);
     let created = false;
 
     if (!card) {
-      card = addCard({ bank: bank, last4: last4, name: (bank || "Card") + " ••" + last4, source: "shortcut" });
+      card = addCard({
+        bank: bank,
+        last4: knownLast4,
+        name: knownLast4 ? (bank || "Card") + " ••" + knownLast4 : bank,
+        source: "shortcut"
+      });
       created = true;
     }
 
@@ -518,13 +527,83 @@ function readCards() {
     });
 }
 
-/** By last 4. Only when two cards share it does the bank decide between them. */
-function findCardByLast4(last4, bank) {
-  const matches = readCards().filter(function (card) { return card.last4 === last4; });
-  if (matches.length < 2) return matches[0] || null;
+/**
+ * Card resolution:
+ *
+ *   1. last 4, when given and some card has it — if two cards share it, the
+ *      one whose bank or name is nearest to "bank";
+ *   2. otherwise the card whose name is nearest to "bank" (nameScore);
+ *   3. otherwise null, and the caller creates a card.
+ */
+function resolveCard(last4, bank) {
+  const cards = readCards();
 
-  const key = bankKey(bank);
-  return matches.filter(function (card) { return bankKey(card.bank) === key; })[0] || matches[0];
+  if (last4) {
+    const byLast4 = cards.filter(function (card) { return card.last4 === last4; });
+    if (byLast4.length === 1) return byLast4[0];
+    if (byLast4.length > 1) return nearestByName(byLast4, bank, true) || byLast4[0];
+  }
+
+  return bank ? nearestByName(cards, bank, false) : null;
+}
+
+/** The best-scoring card for "bank"; ties go to the shorter (closer) name. */
+function nearestByName(cards, bank, includeBankField) {
+  let best = null;
+  let bestScore = 0;
+
+  cards.forEach(function (card) {
+    let score = nameScore(card.name, bank);
+    if (includeBankField) score = Math.max(score, nameScore(card.bank, bank));
+
+    if (score > bestScore ||
+        (score === bestScore && score > 0 && card.name.length < best.name.length)) {
+      best = card;
+      bestScore = score;
+    }
+  });
+
+  return best;
+}
+
+/**
+ * How near a card name is to the bank the Shortcut sent, compared without
+ * case, spaces or punctuation. 0 means not a match at all.
+ *
+ *   4  same            "Union Bank"  ~ "UNIONBANK"
+ *   3  starts with     "BDO"         ~ "BDO Gold"
+ *   2  contains        "Gold"        ~ "BDO Gold"
+ *   1  1–2 typos       "Eastwset"    ~ "EastWest"   (names of 5+ characters
+ *                                                    only, so BPI ≠ BDO)
+ */
+function nameScore(name, bank) {
+  const a = bankKey(name);
+  const b = bankKey(bank);
+  if (!a || !b) return 0;
+
+  if (a === b) return 4;
+  if (a.indexOf(b) === 0 || b.indexOf(a) === 0) return 3;
+  if (a.indexOf(b) !== -1 || b.indexOf(a) !== -1) return 2;
+  if (Math.min(a.length, b.length) >= 5 && editDistance(a, b) <= 2) return 1;
+  return 0;
+}
+
+function editDistance(a, b) {
+  let previous = [];
+  for (var j = 0; j <= b.length; j++) previous[j] = j;
+
+  for (var i = 1; i <= a.length; i++) {
+    const current = [i];
+    for (var k = 1; k <= b.length; k++) {
+      current[k] = Math.min(
+        previous[k] + 1,
+        current[k - 1] + 1,
+        previous[k - 1] + (a[i - 1] === b[k - 1] ? 0 : 1)
+      );
+    }
+    previous = current;
+  }
+  return previous[b.length];
 }
 
 function addCard(card) {
