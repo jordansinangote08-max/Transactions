@@ -179,6 +179,15 @@
     .row{display:flex;justify-content:space-between;gap:var(--space-3);padding-top:var(--space-3);margin-top:var(--space-3);border-top:var(--hairline) solid var(--divider);font-size:var(--text-sm)}
     .row span{color:var(--muted)}
     .row strong{text-align:right}
+    .row:has(.cycle-picker){align-items:center}
+    /* Looks like the other values in the statement; tapping opens the phone's own list.
+       16px stops iPhone Safari zooming the page when the list opens. */
+    .cycle-picker{position:relative;display:inline-flex;align-items:center;min-width:0;cursor:pointer}
+    .cycle-picker select{appearance:none;-webkit-appearance:none;border:0;background:transparent;color:var(--text);
+      font:inherit;font-size:16px;font-weight:700;font-variant-numeric:tabular-nums;text-align:right;text-align-last:right;
+      min-height:44px;padding:0 22px 0 0;max-width:100%;cursor:pointer}
+    .cycle-picker svg{position:absolute;right:0;width:16px;height:16px;color:var(--muted);pointer-events:none}
+    .cycle-picker select:focus-visible{outline:2px solid var(--primary);outline-offset:2px;border-radius:var(--radius-sm,6px)}
 
     .quick-tip{padding:var(--space-4);background:var(--warning-soft);border-radius:var(--radius-lg);font-size:var(--text-sm)}
     .quick-tip strong{display:block;margin-bottom:.25rem;color:var(--warning)}
@@ -893,8 +902,12 @@
           <strong id="statementCreditLimit">—</strong>
         </div>
         <div class="row">
-          <span>Current cycle</span>
-          <strong id="statementCycleRange">—</strong>
+          <span>Cycles</span>
+          <!-- Every billing cycle this card has rows for in the sheet, plus the current one. -->
+          <label class="cycle-picker">
+            <select id="statementCycleSelect" aria-label="Billing cycle"></select>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+          </label>
         </div>
         <div class="row">
           <span>Payment due</span>
@@ -1156,7 +1169,7 @@
       statementModalTitle: document.getElementById("statementModalTitle"),
       statementModalSubtitle: document.getElementById("statementModalSubtitle"),
       statementSourceNote: document.getElementById("statementSourceNote"),
-      statementCycleRange: document.getElementById("statementCycleRange"),
+      statementCycleSelect: document.getElementById("statementCycleSelect"),
       statementCreditLimit: document.getElementById("statementCreditLimit"),
       statementDue: document.getElementById("statementDue"),
       statementTotal: document.getElementById("statementTotal"),
@@ -1927,19 +1940,62 @@
       }
     }
 
-    function currentCycleFor(card){
-      const today=new Date();
-      const upcoming=card.calc(today);
+    /** The billing cycle containing `date` (default today): the day after the previous
+     *  statement through the next statement, and that statement's due date. */
+    function cycleFor(card,date=new Date()){
+      const upcoming=card.calc(date);
       const prevSeed=new Date(upcoming.statement.getFullYear(),upcoming.statement.getMonth()-1,1);
       const previous=card.calc(prevSeed);
       const cycleStart=new Date(previous.statement);
       cycleStart.setDate(cycleStart.getDate()+1);
-      return {cycleStart,cycleEnd:upcoming.statement,due:upcoming.due};
+      return {cycleStart,cycleEnd:upcoming.statement,due:upcoming.due,key:dateKey(upcoming.statement)};
+    }
+
+    function currentCycleFor(card){
+      return cycleFor(card);
+    }
+
+    function cycleLabel(cycle){
+      return `${fmtDue(cycle.cycleStart)} – ${fmtDue(cycle.cycleEnd)}`;
     }
 
     let statementRequestToken=0;
+    // The open statement: its card, every row it has, and where those rows came from.
+    let statementView=null;
 
-    function renderStatement(card,cycleStart,cycleEnd,due,items,sourceNote,pending){
+    /** Current cycle plus every cycle a row falls in, newest first. */
+    function cyclesFor(card,rows){
+      const byKey={};
+      const current=cycleFor(card);
+      byKey[current.key]=current;
+      rows.forEach(row=>{
+        if(!/^\d{4}-\d{2}-\d{2}$/.test(row.date||"")) return;
+        const cycle=cycleFor(card,parseDate(row.date));
+        byKey[cycle.key]=byKey[cycle.key]||cycle;
+      });
+      return Object.values(byKey).sort((a,b)=>b.cycleEnd-a.cycleEnd);
+    }
+
+    /** Fills the picker; keeps the chosen cycle if it is still there, else the current one. */
+    function renderCycleOptions(cycles,selectedKey){
+      const keep=cycles.some(cycle=>cycle.key===selectedKey)?selectedKey:cycleFor(statementView.card).key;
+      el.statementCycleSelect.innerHTML=cycles.map(cycle=>
+        `<option value="${cycle.key}"${cycle.key===keep?" selected":""}>${escapeHtml(cycleLabel(cycle))}</option>`
+      ).join("");
+      el.statementCycleSelect.value=keep;
+    }
+
+    function selectedCycle(){
+      const key=el.statementCycleSelect.value;
+      return statementView.cycles.find(cycle=>cycle.key===key)||cycleFor(statementView.card);
+    }
+
+    function renderStatement(){
+      const {card,rows,sourceNote,pending}=statementView;
+      const cycle=selectedCycle();
+      const startKey=dateKey(cycle.cycleStart);
+      const endKey=dateKey(cycle.cycleEnd);
+      const items=rows.filter(row=>row.date>=startKey&&row.date<=endKey);
       const total=items.reduce((sum,item)=>sum+Number(item.amount||0),0);
 
       el.statementModalTitle.textContent=`${card.name} statement`;
@@ -1949,8 +2005,7 @@
         : `<span class="custom-card-placeholder" style="width:100%;height:100%;display:grid;place-items:center;font-weight:800">${escapeHtml(initials(card.name))}</span>`;
       el.statementSourceNote.textContent=sourceNote;
       el.statementCreditLimit.textContent=card.creditLimit==null?"—":fmtMoney(card.creditLimit);
-      el.statementCycleRange.textContent=`${fmtDue(cycleStart)} – ${fmtDue(cycleEnd)}`;
-      el.statementDue.textContent=fmtDue(due);
+      el.statementDue.textContent=fmtDue(cycle.due);
       // While the sheet is still loading, an empty local cache would render as a
       // confident "₱0.00" and then snap to the real figure a second later. That reads
       // as the total flickering, and worse, ₱0.00 is a claim the app cannot support
@@ -1958,6 +2013,14 @@
       el.statementTotal.textContent = (pending && !items.length)
         ? "—"
         : `₱${total.toLocaleString("en-PH",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+    }
+
+    /** Swap in a new set of rows (local, then live), keeping the picked cycle. */
+    function showStatementRows(rows,sourceNote,pending){
+      const selectedKey=el.statementCycleSelect.value;
+      statementView={...statementView,rows,sourceNote,pending:!!pending,cycles:cyclesFor(statementView.card,rows)};
+      renderCycleOptions(statementView.cycles,selectedKey);
+      renderStatement();
     }
 
     // A sheet row belongs to a card if its Card cell is either the card's name or
@@ -1970,25 +2033,23 @@
       return cell!==""&&(cell===norm(card.name)||cell===norm(card.id));
     }
 
-    function localStatementItems(cardId,startKey,endKey){
+    function localStatementRows(cardId){
       return logs
-        .filter(log=>log.card===cardId&&log.date>=startKey&&log.date<=endKey)
-        .map(log=>({date:log.date,amount:log.amount,note:log.note}))
-        .sort((a,b)=>a.date<b.date?1:-1);
+        .filter(log=>log.card===cardId)
+        .map(log=>({date:log.date,amount:log.amount,note:log.note}));
     }
 
     async function openStatementModal(cardId){
       const card=cardById(cardId);
       if(!card) return;
       const requestToken=++statementRequestToken;
-      const {cycleStart,cycleEnd,due}=currentCycleFor(card);
-      const startKey=dateKey(cycleStart);
-      const endKey=dateKey(cycleEnd);
+      statementView={card,rows:[],cycles:[],sourceNote:"",pending:true};
+      el.statementCycleSelect.innerHTML="";
 
       // Show something instantly from local data, then upgrade to the live
       // sheet once it arrives — opening should never feel like it's waiting
       // on the network.
-      renderStatement(card,cycleStart,cycleEnd,due,localStatementItems(cardId,startKey,endKey),"Loading live data from your Google Sheet…",true);
+      showStatementRows(localStatementRows(cardId),"Loading live data from your Google Sheet…",true);
       revealOverlay(el.statementModal);
       el.statementModal.setAttribute("aria-hidden","false");
       document.body.classList.add("modal-open");
@@ -1996,16 +2057,13 @@
       try{
         const rows=await fetchStatementRows();
         if(requestToken!==statementRequestToken) return; // modal moved on to a different card/closed
-        const items=rows
-          // Rows written before the switch carry the id ("EW", "CUSTOM_1790..."),
-          // newer ones carry the name. Accept either so a card keeps its history
-          // across the change rather than appearing to start from empty.
-          .filter(row=>matchesCard(row.card,card)&&row.date>=startKey&&row.date<=endKey)
-          .sort((a,b)=>a.date<b.date?1:-1);
-        renderStatement(card,cycleStart,cycleEnd,due,items,"Live from your Google Sheet, just now.");
+        // Rows written before the switch carry the id ("EW", "CUSTOM_1790..."),
+        // newer ones carry the name. Accept either so a card keeps its history
+        // across the change rather than appearing to start from empty.
+        showStatementRows(rows.filter(row=>matchesCard(row.card,card)),"Live from your Google Sheet, just now.");
       }catch(error){
         if(requestToken!==statementRequestToken) return;
-        renderStatement(card,cycleStart,cycleEnd,due,localStatementItems(cardId,startKey,endKey),"Couldn't reach the Sheet — showing this device's locally saved data.");
+        showStatementRows(localStatementRows(cardId),"Couldn't reach the Sheet — showing this device's locally saved data.");
       }
     }
 
@@ -2602,6 +2660,7 @@
     });
 
     el.closeStatementModal.addEventListener("click",closeStatementModal);
+    el.statementCycleSelect.addEventListener("change",()=>{if(statementView) renderStatement()});
     el.statementModal.addEventListener("click",event=>{if(event.target===el.statementModal) closeStatementModal()});
 
     // ============================================================
