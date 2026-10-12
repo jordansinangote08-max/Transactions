@@ -240,7 +240,7 @@
        dropping it is what keeps the sheet at 60fps on older hardware. */
     .modal{position:fixed;inset:0;z-index:100;display:grid;place-items:center;padding:clamp(12px,3vw,28px);background:rgba(8,9,9,.42);opacity:0;transition:opacity .22s ease}
     .modal.is-visible{opacity:1}
-    .modal-panel{width:min(100%,580px);max-height:min(90dvh,760px);overflow:auto;padding:clamp(20px,4vw,32px);background:var(--surface);border:1px solid var(--border);border-radius:24px;box-shadow:0 24px 70px rgba(0,0,0,.38);transform:scale(.95) translateY(10px);transition:transform .32s var(--ease-spring)}
+    .modal-panel{width:min(100%,580px);max-height:min(90dvh,760px);overflow-x:hidden;overflow-y:auto;padding:clamp(20px,4vw,32px);background:var(--surface);border:1px solid var(--border);border-radius:24px;box-shadow:0 24px 70px rgba(0,0,0,.38);transform:scale(.95) translateY(10px);transition:transform .32s var(--ease-spring)}
     .modal.is-visible .modal-panel{transform:scale(1) translateY(0)}
     /* Exiting is quicker than entering — a sheet should get out of the way faster than it arrives. */
     .modal:not(.is-visible) .modal-panel{transition:transform .18s var(--ease-spring-out)}
@@ -257,7 +257,15 @@
     .field{display:grid;gap:var(--space-2)}
     .field label{font-size:var(--text-sm);font-weight:700}
     .field input{width:100%;min-height:52px;padding:0 var(--space-4);background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-md)}
-    .field input[type="date"]{text-align:center;text-align-last:center}
+    /* iPhone Safari draws a date input wider than its box unless its native look is
+       turned off, which made the whole sheet wider than the screen and let it slide
+       sideways. These keep it, and every field, inside the sheet. */
+    .field input[type="date"]{text-align:center;text-align-last:center;-webkit-appearance:none;appearance:none;display:block;min-width:0;max-width:100%}
+    .field input[type="date"]::-webkit-date-and-time-value{text-align:center;min-width:0}
+    .field input,.field select,.field textarea{max-width:100%;min-width:0}
+    .modal-panel .stack>*,.modal-head>*{min-width:0}
+    .choice{min-width:0}
+    .choice label{min-width:0;overflow-wrap:anywhere}
     .amount-shell{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-md);overflow:hidden}
     .amount-shell span{padding-left:var(--space-4);font-weight:700;color:var(--muted)}
     .amount-shell input{border:0;background:transparent;min-width:0}
@@ -310,7 +318,9 @@
       .modal{align-items:end;padding:0}
       .modal-panel{width:100%;max-height:92dvh;border-radius:var(--radius-xl) var(--radius-xl) 0 0;padding:26px 20px calc(22px + env(safe-area-inset-bottom));transform:translateY(100%);
         /* Contain the sheet's own scroll so dragging past its end doesn't scroll the page behind it. */
-        overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
+        overscroll-behavior:contain;-webkit-overflow-scrolling:touch;
+        /* Sheets scroll up and down only — never sideways. */
+        touch-action:pan-y}
       .modal.is-visible .modal-panel{transform:translateY(0)}
       /* The grabber. Drawn, not marked up — it is decoration, so it stays out of the a11y tree. */
       .modal-panel::before{
