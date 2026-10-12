@@ -215,11 +215,7 @@
     .ai-usage-card span{font-size:var(--text-xs);color:var(--primary);font-weight:700}
     .ai-usage-card strong{font-size:1.15rem;line-height:1.15;font-variant-numeric:tabular-nums}
     .ai-usage-card small{font-size:var(--text-xs);color:var(--muted);font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
-    .ai-breakdown{display:grid;gap:0}
-    .ai-breakdown-row{display:flex;justify-content:space-between;gap:var(--space-3);padding:.6rem .1rem;border-bottom:var(--hairline) solid var(--divider);font-size:var(--text-sm)}
-    .ai-breakdown-row:last-child{border-bottom:0}
-    .ai-breakdown-row span{min-width:0;overflow-wrap:anywhere}
-    .ai-breakdown-row strong{white-space:nowrap;font-variant-numeric:tabular-nums}
+
     .history-item{display:flex;align-items:center;justify-content:space-between;gap:var(--space-3);padding:.95rem .35rem;border-bottom:var(--hairline) solid var(--divider)}
     .history-item:last-child{border-bottom:0}
     .history-main{min-width:0}
@@ -961,17 +957,6 @@
 
       <h3 class="ai-section-title">Token usage</h3>
       <div class="ai-usage" id="aiUsage"></div>
-
-      <h3 class="ai-section-title">By feature</h3>
-      <div class="ai-breakdown" id="aiByFeature"></div>
-
-      <h3 class="ai-section-title">By model</h3>
-      <div class="ai-breakdown" id="aiByModel"></div>
-
-      <h3 class="ai-section-title">Recent AI calls</h3>
-      <div class="history" id="aiRecent"></div>
-
-      <p class="field-help" id="aiFootnote">Every AI call the app makes is counted here, with the token counts and model the AI provider reports. Today the only AI feature is the iPhone Shortcut's charge check — the web page and the Google Sheet make no AI calls. Updates every 30 seconds while open.</p>
     </div>
   </section>
 
@@ -1152,9 +1137,6 @@
       aiApi: document.getElementById("aiApi"),
       aiStatusDetail: document.getElementById("aiStatusDetail"),
       aiUsage: document.getElementById("aiUsage"),
-      aiByFeature: document.getElementById("aiByFeature"),
-      aiByModel: document.getElementById("aiByModel"),
-      aiRecent: document.getElementById("aiRecent"),
       salaryModal: document.getElementById("salaryModal"),
       openSalaryModal: document.getElementById("openSalaryModal"),
       closeSalaryModal: document.getElementById("closeSalaryModal"),
@@ -2106,23 +2088,6 @@
           <small>${fmtTokens(sum.calls)} call${sum.calls===1?"":"s"} · ${fmtUsd(sum.cost_usd)}</small>
         </div>`;
       }).join("");
-
-      const breakdown=list=>list&&list.length
-        ? list.map(item=>`<div class="ai-breakdown-row"><span>${escapeHtml(item.name||"—")}</span><strong>${fmtTokens(item.total)} tokens · ${fmtTokens(item.calls)} call${item.calls===1?"":"s"}</strong></div>`).join("")
-        : `<p class="field-help" style="margin:0">No AI calls yet.</p>`;
-      el.aiByFeature.innerHTML=breakdown(ai.by_feature);
-      el.aiByModel.innerHTML=breakdown(ai.by_model);
-
-      el.aiRecent.innerHTML=(ai.recent||[]).length
-        ? ai.recent.map(call=>`
-          <div class="history-item">
-            <div class="history-main">
-              <div class="history-title">${escapeHtml(call.result)}</div>
-              <div class="history-meta">${escapeHtml(fmtWhen(call.at))} · ${escapeHtml(call.model||"—")}</div>
-            </div>
-            <strong style="white-space:nowrap;font-variant-numeric:tabular-nums">${fmtTokens(call.input+call.output)}</strong>
-          </div>`).join("")
-        : `<p class="empty">No AI calls yet. They appear here as the iPhone Shortcut sends notifications.</p>`;
     }
 
     async function refreshAi(){
