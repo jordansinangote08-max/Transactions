@@ -111,6 +111,7 @@ function doPost(e) {
  *   ?action=summary            lifetime total per card
  *   ?action=entries[&card=X]   rows, newest first, optionally one card's
  *   ?action=cards              the "Cards" sheet
+ *   ?action=ai                 AI token usage and live model status
  *
  * A web-app deployment set to "Anyone" makes every transaction readable by
  * anyone holding the URL — the same exposure the published CSV already has.
@@ -154,10 +155,14 @@ function doGet(e) {
       return jsonResponse({ ok: true, state: readState() });
     }
 
+    if (action === "ai") {
+      return jsonResponse({ ok: true, ai: readAiStatus() });
+    }
+
     return jsonResponse({
       ok: false,
       error: "Unknown action: " + action,
-      actions: ["summary", "entries", "cards"]
+      actions: ["summary", "entries", "cards", "state", "ai"]
     });
   } catch (error) {
     console.error("doGet failed: " + error.message);
@@ -765,24 +770,62 @@ const AI_INSTRUCTION =
 
 /** true = a charge, false = not a charge, null = no usable answer. */
 function isChargeByAI(raw) {
-  const props = PropertiesService.getScriptProperties();
-  const anthropicKey = props.getProperty("ANTHROPIC_API_KEY");
-  const openrouterKey = props.getProperty("OPENROUTER_API_KEY");
-  if (!raw || (!anthropicKey && !openrouterKey)) {
+  const ai = aiConfig();
+  if (!raw || !ai.api) {
     console.warn("AI check skipped: " + (raw ? "no ANTHROPIC_API_KEY or OPENROUTER_API_KEY set." : "empty notification."));
     return null;
   }
 
+  let call;
   try {
-    const answer = anthropicKey ? askAnthropic(anthropicKey, raw) : askOpenRouter(openrouterKey, props.getProperty("OPENROUTER_MODEL"), raw);
-    const letter = String(answer || "").trim().charAt(0).toUpperCase();
-    return letter === "Y" ? true : letter === "N" ? false : null;
+    call = ai.api === "Anthropic" ? askAnthropic(ai.key, raw) : askOpenRouter(ai.key, ai.model, raw);
   } catch (error) {
-    console.warn("AI check failed: " + error.message);
-    return null;
+    call = { http: 0, error: error.message };
+  }
+
+  const letter = String(call.text || "").trim().charAt(0).toUpperCase();
+  const result = letter === "Y" ? true : letter === "N" ? false : null;
+
+  recordAiCall({
+    feature: "Charge check (iPhone Shortcut)",
+    api: ai.api,
+    model: call.model || ai.model,
+    input: call.input || 0,
+    output: call.output || 0,
+    result: result === true ? "charge" : result === false ? "not a charge" : "no answer",
+    http: call.http,
+    error: call.error || ""
+  });
+
+  if (call.error) console.warn("AI check failed: " + call.error);
+  return result;
+}
+
+/** Which provider and model are in use, from the Script Properties. */
+function aiConfig() {
+  const props = PropertiesService.getScriptProperties();
+  const anthropicKey = props.getProperty("ANTHROPIC_API_KEY");
+  const openrouterKey = props.getProperty("OPENROUTER_API_KEY");
+
+  if (anthropicKey) return { api: "Anthropic", key: anthropicKey, model: AI_MODEL };
+  if (openrouterKey) return { api: "OpenRouter", key: openrouterKey, model: props.getProperty("OPENROUTER_MODEL") || OPENROUTER_DEFAULT_MODEL };
+  return { api: "", key: "", model: AI_MODEL };
+}
+
+/** The API's error message, when its body has one. */
+function apiErrorMessage(response) {
+  try {
+    const body = JSON.parse(response.getContentText());
+    return (body.error && (body.error.message || body.error)) || body.message || "";
+  } catch (error) {
+    return "";
   }
 }
 
+/**
+ * Returns {text, model, input, output, http, error}. "model" is the model the
+ * API says answered — not the one asked for — so the AI panel shows what really ran.
+ */
 function askAnthropic(key, raw) {
   const response = UrlFetchApp.fetch("https://api.anthropic.com/v1/messages", {
     method: "post",
@@ -800,16 +843,23 @@ function askAnthropic(key, raw) {
     muteHttpExceptions: true
   });
 
-  if (response.getResponseCode() !== 200) {
-    throw new Error("Anthropic HTTP " + response.getResponseCode());
+  const http = response.getResponseCode();
+  if (http !== 200) {
+    return { http: http, error: "Anthropic HTTP " + http + ": " + apiErrorMessage(response) };
   }
-  const message = JSON.parse(response.getContentText());
-  if (message.stop_reason === "refusal") return "";
 
-  return (message.content || [])
-    .filter(function (block) { return block.type === "text"; })
-    .map(function (block) { return block.text; })
-    .join("");
+  const message = JSON.parse(response.getContentText());
+  const usage = message.usage || {};
+  return {
+    http: http,
+    model: message.model,
+    input: (usage.input_tokens || 0) + (usage.cache_read_input_tokens || 0) + (usage.cache_creation_input_tokens || 0),
+    output: usage.output_tokens || 0,
+    text: message.stop_reason === "refusal" ? "" : (message.content || [])
+      .filter(function (block) { return block.type === "text"; })
+      .map(function (block) { return block.text; })
+      .join("")
+  };
 }
 
 function askOpenRouter(key, model, raw) {
@@ -818,7 +868,7 @@ function askOpenRouter(key, model, raw) {
     contentType: "application/json",
     headers: { Authorization: "Bearer " + key },
     payload: JSON.stringify({
-      model: model || OPENROUTER_DEFAULT_MODEL,
+      model: model,
       max_tokens: 5,
       reasoning: { enabled: false },
       messages: [
@@ -829,11 +879,230 @@ function askOpenRouter(key, model, raw) {
     muteHttpExceptions: true
   });
 
-  if (response.getResponseCode() !== 200) {
-    throw new Error("OpenRouter HTTP " + response.getResponseCode());
+  const http = response.getResponseCode();
+  if (http !== 200) {
+    return { http: http, error: "OpenRouter HTTP " + http + ": " + apiErrorMessage(response) };
   }
-  const choice = (JSON.parse(response.getContentText()).choices || [])[0];
-  return choice && choice.message ? choice.message.content : "";
+
+  const body = JSON.parse(response.getContentText());
+  const choice = (body.choices || [])[0];
+  const usage = body.usage || {};
+  return {
+    http: http,
+    model: body.model,
+    input: usage.prompt_tokens || 0,
+    output: usage.completion_tokens || 0,
+    text: choice && choice.message ? choice.message.content : ""
+  };
+}
+
+
+// ============================================================
+// AI USAGE AND STATUS (the web app's "AI" panel)
+// ============================================================
+
+/**
+ * Every AI call the app makes is one row here, with the token counts and the
+ * model the API itself reported:
+ *
+ *   A Timestamp | B Feature | C API | D Model | E Input tokens | F Output tokens |
+ *   G Result | H HTTP | I Error
+ *
+ * Today the only AI feature is the iPhone Shortcut's charge check; the web app
+ * page and the Google Sheet make no AI calls of their own. Anything that calls
+ * AI later should go through recordAiCall too, so the panel stays complete.
+ */
+const AI_USAGE_SHEET = "AI Usage";
+const AI_USAGE_HEADERS = ["Timestamp", "Feature", "API", "Model", "Input tokens", "Output tokens", "Result", "HTTP", "Error"];
+
+/** USD per million tokens, for the cost estimate. Models not listed show no cost. */
+const AI_PRICES = {
+  "claude-haiku-5-5": { input: 0.10, output: 0.50 },
+  "anthropic/claude-haiku-5.5": { input: 0.10, output: 0.50 }
+};
+
+function getAiUsageSheet() {
+  const book = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = book.getSheetByName(AI_USAGE_SHEET);
+
+  if (!sheet) {
+    sheet = book.insertSheet(AI_USAGE_SHEET);
+    sheet.appendRow(AI_USAGE_HEADERS);
+    sheet.setFrozenRows(1);
+  }
+  return sheet;
+}
+
+function recordAiCall(call) {
+  try {
+    getAiUsageSheet().appendRow([
+      new Date(), call.feature, call.api, call.model || "",
+      Number(call.input) || 0, Number(call.output) || 0,
+      call.result, call.http || "", String(call.error || "").slice(0, 300)
+    ]);
+  } catch (error) {
+    // Losing a usage row must never lose the transaction.
+    console.warn("Could not record AI usage: " + error.message);
+  }
+}
+
+function priceFor(model) {
+  const key = String(model || "").toLowerCase();
+  if (AI_PRICES[key]) return AI_PRICES[key];
+  // The API may answer with a dated or prefixed id for the same model.
+  if (key.indexOf("haiku-5-5") !== -1 || key.indexOf("haiku-5.5") !== -1) return AI_PRICES["claude-haiku-5-5"];
+  return null;
+}
+
+/** What a call's failure means: "no_credits", "invalid_key", "rate_limited" or "error". */
+function failureKind(http, error) {
+  const text = String(error || "").toLowerCase();
+  if (http === 402 || /credit|balance|insufficient|quota|billing/.test(text)) return "no_credits";
+  if (http === 401 || http === 403) return "invalid_key";
+  if (http === 429) return "rate_limited";
+  return "error";
+}
+
+/**
+ * A free check that the key works and the model is available — no tokens are
+ * used. Anthropic: GET /v1/models/{model}. OpenRouter: GET /api/v1/credits for
+ * the balance, and the model's endpoints. Cached 30 seconds.
+ */
+function liveAiCheck(ai) {
+  if (!ai.api) return { state: "not_configured", detail: "No ANTHROPIC_API_KEY or OPENROUTER_API_KEY in Script Properties." };
+
+  const cache = CacheService.getScriptCache();
+  const cacheKey = "ai-live:" + ai.api + ":" + ai.model;
+  const cached = cache.get(cacheKey);
+  if (cached) return JSON.parse(cached);
+
+  let result;
+  try {
+    if (ai.api === "Anthropic") {
+      const response = UrlFetchApp.fetch("https://api.anthropic.com/v1/models/" + encodeURIComponent(ai.model), {
+        headers: { "x-api-key": ai.key, "anthropic-version": "2023-06-01" },
+        muteHttpExceptions: true
+      });
+      const http = response.getResponseCode();
+      if (http === 200) {
+        const model = JSON.parse(response.getContentText());
+        result = { state: "live", detail: "Key accepted; model available.", model: model.id, model_name: model.display_name || "" };
+      } else if (http === 404) {
+        result = { state: "error", detail: "Model " + ai.model + " is not available to this key." };
+      } else {
+        result = { state: failureKind(http, apiErrorMessage(response)), detail: "HTTP " + http + ": " + apiErrorMessage(response) };
+      }
+    } else {
+      const headers = { Authorization: "Bearer " + ai.key };
+      const credits = UrlFetchApp.fetch("https://openrouter.ai/api/v1/credits", { headers: headers, muteHttpExceptions: true });
+      const http = credits.getResponseCode();
+
+      if (http !== 200) {
+        result = { state: failureKind(http, apiErrorMessage(credits)), detail: "HTTP " + http + ": " + apiErrorMessage(credits) };
+      } else {
+        const data = JSON.parse(credits.getContentText()).data || {};
+        const remaining = Number(data.total_credits || 0) - Number(data.total_usage || 0);
+        result = remaining <= 0
+          ? { state: "no_credits", detail: "OpenRouter credits used up." }
+          : { state: "live", detail: "Key accepted." };
+        result.credits_remaining_usd = Math.round(remaining * 10000) / 10000;
+
+        const endpoints = UrlFetchApp.fetch("https://openrouter.ai/api/v1/models/" + ai.model + "/endpoints", { headers: headers, muteHttpExceptions: true });
+        if (endpoints.getResponseCode() === 404) {
+          result = { state: "error", detail: "OpenRouter has no model " + ai.model + ". Set OPENROUTER_MODEL to its id.", credits_remaining_usd: result.credits_remaining_usd };
+        }
+      }
+    }
+  } catch (error) {
+    result = { state: "error", detail: "Could not reach " + ai.api + ": " + error.message };
+  }
+
+  result.checked_at = new Date().toISOString();
+  cache.put(cacheKey, JSON.stringify(result), 30);
+  return result;
+}
+
+/** ?action=ai — what the web app's AI panel shows. */
+function readAiStatus() {
+  const ai = aiConfig();
+  const live = liveAiCheck(ai);
+
+  const rows = getAiUsageSheet().getDataRange().getValues().slice(1).filter(function (row) { return row[0]; });
+  const calls = rows.map(function (row) {
+    return {
+      at: (row[0] instanceof Date ? row[0] : new Date(row[0])),
+      feature: String(row[1]), api: String(row[2]), model: String(row[3]),
+      input: Number(row[4]) || 0, output: Number(row[5]) || 0,
+      result: String(row[6]), http: Number(row[7]) || 0, error: String(row[8] || "")
+    };
+  });
+
+  const tz = Session.getScriptTimeZone();
+  const today = Utilities.formatDate(new Date(), tz, "yyyy-MM-dd");
+  const month = today.slice(0, 7);
+
+  function total(list) {
+    const sum = { calls: list.length, input: 0, output: 0, cost_usd: 0, failed: 0 };
+    list.forEach(function (call) {
+      sum.input += call.input;
+      sum.output += call.output;
+      if (call.result === "no answer") sum.failed++;
+      const price = priceFor(call.model);
+      if (price) sum.cost_usd += (call.input * price.input + call.output * price.output) / 1e6;
+    });
+    sum.total = sum.input + sum.output;
+    sum.cost_usd = Math.round(sum.cost_usd * 1e6) / 1e6;
+    return sum;
+  }
+
+  function groupBy(field) {
+    const groups = {};
+    calls.forEach(function (call) { (groups[call[field]] = groups[call[field]] || []).push(call); });
+    return Object.keys(groups).map(function (name) {
+      const sum = total(groups[name]);
+      sum.name = name;
+      return sum;
+    }).sort(function (a, b) { return b.total - a.total; });
+  }
+
+  const dayOf = function (call) { return Utilities.formatDate(call.at, tz, "yyyy-MM-dd"); };
+  const last = calls[calls.length - 1] || null;
+  const lastOk = last && last.result !== "no answer";
+
+  // The model actually answering: what the API reported on the latest call,
+  // else what the live check confirmed, else what is configured.
+  const modelInUse = (last && lastOk && last.api === ai.api && last.model) || live.model || ai.model;
+
+  let status = live.state;
+  let detail = live.detail;
+  if (live.state === "live" && last && last.api === ai.api) {
+    status = lastOk ? "working" : failureKind(last.http, last.error);
+    if (!lastOk) detail = last.error || "The latest AI call gave no answer.";
+  }
+
+  return {
+    api: ai.api || "Not configured",
+    model: modelInUse,
+    configured_model: ai.model,
+    status: status,
+    status_detail: detail,
+    credits_remaining_usd: live.credits_remaining_usd,
+    checked_at: live.checked_at,
+    last_call: last ? {
+      at: last.at.toISOString(), model: last.model, result: last.result,
+      input: last.input, output: last.output, error: last.error
+    } : null,
+    usage: {
+      today: total(calls.filter(function (call) { return dayOf(call) === today; })),
+      month: total(calls.filter(function (call) { return dayOf(call).slice(0, 7) === month; })),
+      all: total(calls)
+    },
+    by_feature: groupBy("feature"),
+    by_model: groupBy("model"),
+    recent: calls.slice(-15).reverse().map(function (call) {
+      return { at: call.at.toISOString(), feature: call.feature, model: call.model, input: call.input, output: call.output, result: call.result };
+    })
+  };
 }
 
 

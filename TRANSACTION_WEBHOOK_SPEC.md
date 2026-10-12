@@ -115,6 +115,27 @@ with thinking turned off and `max_tokens: 5`; the model answers one letter, `Y`
 or `N`. That is roughly 100–150 input tokens and 1 output token per call — at
 Haiku 5.5's $0.10 / $0.50 per million tokens, about ₱0.001 per notification.
 
+### AI usage and status (the web app's **AI** menu)
+
+Every AI call is logged to an **AI Usage** tab (created on first use):
+`Timestamp | Feature | API | Model | Input tokens | Output tokens | Result | HTTP | Error`.
+Token counts and the model come from the provider's own response, so they are
+what was actually billed and what actually answered. Today the only AI feature
+is this charge check; the web page and the Google Sheet make no AI calls.
+
+`GET …/exec?action=ai` returns what the panel shows:
+
+| Field | Meaning |
+|---|---|
+| Model used | The model the provider reported on the latest call; before any call, the model the live check confirmed |
+| Status | `working` (latest call succeeded) · `live` (key and model OK, no call yet) · `no_credits` · `invalid_key` · `rate_limited` · `not_configured` · `error` |
+| API type | `Anthropic`, `OpenRouter`, or `Not configured` |
+| Usage | Calls, input/output tokens and estimated cost for today, this month and all time; by feature; by model; the last 15 calls |
+
+The live check uses no tokens: Anthropic `GET /v1/models/{model}`; OpenRouter
+`GET /api/v1/credits` (credits left) and the model's endpoints. It is cached
+for 30 seconds; the panel refreshes every 30 seconds while open.
+
 ### Responses
 
 ```json
