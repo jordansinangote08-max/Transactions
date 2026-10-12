@@ -752,6 +752,7 @@ function amountFromText(raw) {
 
 /**
  * Script Properties (Project Settings → Script Properties), set ONE of:
+ * (a placeholder like "NA" counts as not set — see apiKeyValue)
  *
  *   ANTHROPIC_API_KEY   calls Anthropic directly        (used if both are set)
  *   OPENROUTER_API_KEY  calls the same model via OpenRouter
@@ -801,11 +802,20 @@ function isChargeByAI(raw) {
   return result;
 }
 
+/**
+ * A Script Property value that is really a key. Placeholders such as "NA",
+ * "none" or "-" count as no key: real Anthropic and OpenRouter keys are long.
+ */
+function apiKeyValue(props, name) {
+  const value = String(props.getProperty(name) || "").trim();
+  return value.length >= 20 ? value : "";
+}
+
 /** Which provider and model are in use, from the Script Properties. */
 function aiConfig() {
   const props = PropertiesService.getScriptProperties();
-  const anthropicKey = props.getProperty("ANTHROPIC_API_KEY");
-  const openrouterKey = props.getProperty("OPENROUTER_API_KEY");
+  const anthropicKey = apiKeyValue(props, "ANTHROPIC_API_KEY");
+  const openrouterKey = apiKeyValue(props, "OPENROUTER_API_KEY");
 
   if (anthropicKey) return { api: "Anthropic", key: anthropicKey, model: AI_MODEL };
   if (openrouterKey) return { api: "OpenRouter", key: openrouterKey, model: props.getProperty("OPENROUTER_MODEL") || OPENROUTER_DEFAULT_MODEL };
