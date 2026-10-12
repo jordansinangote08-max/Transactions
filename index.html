@@ -197,6 +197,29 @@
     .btn-danger{color:var(--error);border:1px solid color-mix(in srgb,var(--error) 40%,var(--border));background:transparent}
 
     .history{display:grid;gap:0}
+
+    /* AI panel */
+    .ai-status{display:grid;gap:0;padding:var(--space-2) var(--space-4);background:var(--surface-2);border:var(--hairline) solid var(--divider);border-radius:var(--radius-lg)}
+    .ai-status-row{display:flex;align-items:center;justify-content:space-between;gap:var(--space-3);padding:.6rem 0;border-bottom:var(--hairline) solid var(--divider);font-size:var(--text-sm)}
+    .ai-status-row span{color:var(--muted)}
+    .ai-status-row strong{text-align:right;overflow-wrap:anywhere}
+    .ai-status-detail{font-size:var(--text-xs);color:var(--muted);padding:.55rem 0 .25rem;overflow-wrap:anywhere}
+    .ai-state{display:inline-flex;align-items:center;gap:6px;padding:.15rem .5rem;border-radius:var(--radius-full);font-size:var(--text-xs);font-weight:700;background:var(--surface-offset);color:var(--muted)}
+    .ai-state::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
+    .ai-state[data-state="working"],.ai-state[data-state="live"]{background:var(--success-soft);color:var(--success)}
+    .ai-state[data-state="no_credits"],.ai-state[data-state="invalid_key"],.ai-state[data-state="error"]{background:var(--error-soft);color:var(--error)}
+    .ai-state[data-state="rate_limited"],.ai-state[data-state="not_configured"]{background:var(--warning-soft);color:var(--warning)}
+    .ai-section-title{font-size:var(--text-sm);font-weight:700;color:var(--muted);margin:var(--space-4) 0 var(--space-2)}
+    .ai-usage{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--space-2)}
+    .ai-usage-card{display:grid;gap:2px;padding:var(--space-3);background:var(--primary-soft);border-radius:var(--radius-md);min-width:0}
+    .ai-usage-card span{font-size:var(--text-xs);color:var(--primary);font-weight:700}
+    .ai-usage-card strong{font-size:1.15rem;line-height:1.15;font-variant-numeric:tabular-nums}
+    .ai-usage-card small{font-size:var(--text-xs);color:var(--muted);font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+    .ai-breakdown{display:grid;gap:0}
+    .ai-breakdown-row{display:flex;justify-content:space-between;gap:var(--space-3);padding:.6rem .1rem;border-bottom:var(--hairline) solid var(--divider);font-size:var(--text-sm)}
+    .ai-breakdown-row:last-child{border-bottom:0}
+    .ai-breakdown-row span{min-width:0;overflow-wrap:anywhere}
+    .ai-breakdown-row strong{white-space:nowrap;font-variant-numeric:tabular-nums}
     .history-item{display:flex;align-items:center;justify-content:space-between;gap:var(--space-3);padding:.95rem .35rem;border-bottom:var(--hairline) solid var(--divider)}
     .history-item:last-child{border-bottom:0}
     .history-main{min-width:0}
@@ -661,20 +684,13 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
       <span>Add new card</span>
     </button>
-    <button class="menu-item" id="manageCards" type="button">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M3 10h18M8 15h3"/></svg>
-      <span>Manage cards</span>
-    </button>
 <button class="menu-item" id="transactionHistoryMenuItem" type="button" aria-haspopup="dialog">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/></svg>
       <span>Transaction history</span>
     </button>
-    <!-- Was an anchor to #salarySettings. That id now lives inside a hidden sheet, so the
-         jump would land nowhere — it opens the sheet instead. This is also the only route
-         to salary settings on desktop, where the tab bar is hidden. -->
-    <button class="menu-item" id="salaryMenuItem" type="button" aria-haspopup="dialog">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M6 3v4M18 3v4M5 11h14v9H5z"/></svg>
-      <span>Salary schedule</span>
+    <button class="menu-item" id="aiMenuItem" type="button" aria-haspopup="dialog">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg>
+      <span>AI</span>
     </button>
   </div>
 
@@ -924,6 +940,41 @@
     </div>
   </section>
 
+  <section class="modal" id="aiModal" hidden aria-hidden="true">
+    <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="aiModalTitle" tabindex="-1">
+      <div class="modal-head">
+        <div>
+          <h2 id="aiModalTitle">AI</h2>
+          <p id="aiModalSubtitle">Usage and live model status</p>
+        </div>
+        <button class="modal-close" id="closeAiModal" type="button" aria-label="Close AI usage">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
+      </div>
+
+      <div class="ai-status" aria-live="polite">
+        <div class="ai-status-row"><span>Model used</span><strong id="aiModel">—</strong></div>
+        <div class="ai-status-row"><span>Status</span><strong><span class="ai-state" id="aiState" data-state="loading">Checking…</span></strong></div>
+        <div class="ai-status-row"><span>API type</span><strong id="aiApi">—</strong></div>
+        <p class="ai-status-detail" id="aiStatusDetail"></p>
+      </div>
+
+      <h3 class="ai-section-title">Token usage</h3>
+      <div class="ai-usage" id="aiUsage"></div>
+
+      <h3 class="ai-section-title">By feature</h3>
+      <div class="ai-breakdown" id="aiByFeature"></div>
+
+      <h3 class="ai-section-title">By model</h3>
+      <div class="ai-breakdown" id="aiByModel"></div>
+
+      <h3 class="ai-section-title">Recent AI calls</h3>
+      <div class="history" id="aiRecent"></div>
+
+      <p class="field-help" id="aiFootnote">Every AI call the app makes is counted here, with the token counts and model the AI provider reports. Today the only AI feature is the iPhone Shortcut's charge check — the web page and the Google Sheet make no AI calls. Updates every 30 seconds while open.</p>
+    </div>
+  </section>
+
   <section class="modal" id="salaryModal" hidden aria-hidden="true">
     <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="salaryModalTitle" tabindex="-1">
       <div class="modal-head">
@@ -1093,8 +1144,17 @@
       menuToggle: document.getElementById("menuToggle"),
       appMenu: document.getElementById("appMenu"),
       addNewCard: document.getElementById("addNewCard"),
-      manageCards: document.getElementById("manageCards"),
-      salaryMenuItem: document.getElementById("salaryMenuItem"),
+      aiMenuItem: document.getElementById("aiMenuItem"),
+      aiModal: document.getElementById("aiModal"),
+      closeAiModal: document.getElementById("closeAiModal"),
+      aiModel: document.getElementById("aiModel"),
+      aiState: document.getElementById("aiState"),
+      aiApi: document.getElementById("aiApi"),
+      aiStatusDetail: document.getElementById("aiStatusDetail"),
+      aiUsage: document.getElementById("aiUsage"),
+      aiByFeature: document.getElementById("aiByFeature"),
+      aiByModel: document.getElementById("aiByModel"),
+      aiRecent: document.getElementById("aiRecent"),
       salaryModal: document.getElementById("salaryModal"),
       openSalaryModal: document.getElementById("openSalaryModal"),
       closeSalaryModal: document.getElementById("closeSalaryModal"),
@@ -1988,6 +2048,122 @@
       historyReturnFocus=null;
     }
 
+    // ============================================================
+    // AI PANEL — token usage and live model status (?action=ai)
+    // ============================================================
+
+    const AI_STATES={
+      working:"Working",live:"Live",no_credits:"No credits left",invalid_key:"Invalid API key",
+      rate_limited:"Rate limited",not_configured:"Not set up",error:"Error",loading:"Checking…"
+    };
+    const AI_STATE_HELP={
+      working:"Ready, and the latest AI call succeeded.",
+      live:"Key and model check out; no AI call has run yet.",
+      no_credits:"The provider says the account is out of credits or tokens. Charges are not being saved.",
+      invalid_key:"The API key was rejected. Check it in Apps Script → Script Properties.",
+      rate_limited:"Too many requests right now; it should recover by itself.",
+      not_configured:"Add ANTHROPIC_API_KEY or OPENROUTER_API_KEY in Apps Script → Script Properties.",
+      error:"The last check or call failed."
+    };
+    let aiReturnFocus=null;
+    let aiTimer=null;
+    let aiRequest=0;
+
+    function fmtTokens(value){
+      return Number(value||0).toLocaleString("en-PH");
+    }
+
+    function fmtUsd(value){
+      const n=Number(value||0);
+      return n>0&&n<0.01?`$${n.toFixed(6)}`:`$${n.toFixed(2)}`;
+    }
+
+    function fmtWhen(iso){
+      const date=new Date(iso);
+      return Number.isNaN(date.getTime())?"—":date.toLocaleString("en-PH",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit",second:"2-digit"});
+    }
+
+    function renderAi(ai){
+      el.aiModel.textContent=ai.model||"—";
+      el.aiApi.textContent=ai.api||"—";
+      el.aiState.dataset.state=ai.status;
+      el.aiState.textContent=AI_STATES[ai.status]||ai.status;
+
+      const parts=[AI_STATE_HELP[ai.status]||""];
+      if(ai.status_detail&&ai.status!=="working"&&ai.status!=="live") parts.push(ai.status_detail);
+      if(ai.credits_remaining_usd!=null) parts.push(`Credits left: ${fmtUsd(ai.credits_remaining_usd)}.`);
+      if(ai.model&&ai.configured_model&&ai.model!==ai.configured_model) parts.push(`Configured: ${ai.configured_model}.`);
+      if(ai.checked_at) parts.push(`Checked ${fmtWhen(ai.checked_at)}.`);
+      el.aiStatusDetail.textContent=parts.filter(Boolean).join(" ");
+
+      const usage=ai.usage||{};
+      el.aiUsage.innerHTML=[["Today",usage.today],["This month",usage.month],["All time",usage.all]].map(([label,sum])=>{
+        sum=sum||{};
+        return `<div class="ai-usage-card">
+          <span>${label}</span>
+          <strong>${fmtTokens(sum.total)}</strong>
+          <small>${fmtTokens(sum.input)} in · ${fmtTokens(sum.output)} out</small>
+          <small>${fmtTokens(sum.calls)} call${sum.calls===1?"":"s"} · ${fmtUsd(sum.cost_usd)}</small>
+        </div>`;
+      }).join("");
+
+      const breakdown=list=>list&&list.length
+        ? list.map(item=>`<div class="ai-breakdown-row"><span>${escapeHtml(item.name||"—")}</span><strong>${fmtTokens(item.total)} tokens · ${fmtTokens(item.calls)} call${item.calls===1?"":"s"}</strong></div>`).join("")
+        : `<p class="field-help" style="margin:0">No AI calls yet.</p>`;
+      el.aiByFeature.innerHTML=breakdown(ai.by_feature);
+      el.aiByModel.innerHTML=breakdown(ai.by_model);
+
+      el.aiRecent.innerHTML=(ai.recent||[]).length
+        ? ai.recent.map(call=>`
+          <div class="history-item">
+            <div class="history-main">
+              <div class="history-title">${escapeHtml(call.result)}</div>
+              <div class="history-meta">${escapeHtml(fmtWhen(call.at))} · ${escapeHtml(call.model||"—")}</div>
+            </div>
+            <strong style="white-space:nowrap;font-variant-numeric:tabular-nums">${fmtTokens(call.input+call.output)}</strong>
+          </div>`).join("")
+        : `<p class="empty">No AI calls yet. They appear here as the iPhone Shortcut sends notifications.</p>`;
+    }
+
+    async function refreshAi(){
+      const request=++aiRequest;
+      try{
+        const response=await fetch(`${WEB_APP_URL}?action=ai&_=${Date.now()}`,{cache:"no-store",redirect:"follow"});
+        const payload=await response.json();
+        if(request!==aiRequest) return;
+        if(!payload||!payload.ok||!payload.ai) throw new Error(payload&&payload.error||"No AI data returned");
+        renderAi(payload.ai);
+      }catch(error){
+        if(request!==aiRequest) return;
+        console.warn("Could not load AI status",error);
+        el.aiState.dataset.state="error";
+        el.aiState.textContent="Unreachable";
+        el.aiStatusDetail.textContent="Couldn't reach the Apps Script. If you just updated it, make sure the new version is deployed.";
+      }
+    }
+
+    function openAiSheet(trigger){
+      aiReturnFocus=trigger||document.activeElement;
+      refreshAi();
+      clearInterval(aiTimer);
+      aiTimer=setInterval(()=>{if(!document.hidden) refreshAi()},30000);
+      revealOverlay(el.aiModal);
+      el.aiModal.setAttribute("aria-hidden","false");
+      document.body.classList.add("modal-open");
+      el.aiModal.querySelector(".modal-panel").focus({preventScroll:true});
+    }
+
+    function closeAiSheet(){
+      clearInterval(aiTimer);
+      aiTimer=null;
+      aiRequest++;
+      concealOverlay(el.aiModal);
+      el.aiModal.setAttribute("aria-hidden","true");
+      document.body.classList.remove("modal-open");
+      if(aiReturnFocus&&document.contains(aiReturnFocus)) aiReturnFocus.focus();
+      aiReturnFocus=null;
+    }
+
     let cardsReturnFocus=null;
 
     function renderCardsList(){
@@ -2274,6 +2450,7 @@
       else if(!el.salaryModal.hidden) closeSalarySheet();
       else if(!el.cardsModal.hidden) closeCardsSheet();
       else if(!el.historyModal.hidden) closeHistorySheet();
+      else if(!el.aiModal.hidden) closeAiSheet();
     });
     el.date.addEventListener("change",updateRecommendation);
     el.cardChoices.addEventListener("change",event=>{
@@ -2302,18 +2479,12 @@
       closeAppMenu();
       openCardEditor();
     });
-    el.manageCards.addEventListener("click",()=>{
+    el.aiMenuItem.addEventListener("click",()=>{
       closeAppMenu();
-      document.getElementById("cards")?.scrollIntoView({behavior:"smooth",block:"start"});
-      const firstCustom=el.cardsGrid.querySelector("[data-custom-card]");
-      if(firstCustom){
-        firstCustom.animate([{transform:"scale(1)"},{transform:"scale(1.015)"},{transform:"scale(1)"}],{duration:420});
-      }
+      openAiSheet(el.menuToggle);
     });
-    el.salaryMenuItem.addEventListener("click",()=>{
-      closeAppMenu();
-      openSalarySheet(el.menuToggle);
-    });
+    el.closeAiModal.addEventListener("click",closeAiSheet);
+    el.aiModal.addEventListener("click",event=>{if(event.target===el.aiModal)closeAiSheet()});
     el.openHistoryModal.addEventListener("click",()=>{
       closeAppMenu();
       openHistorySheet(el.menuToggle);
