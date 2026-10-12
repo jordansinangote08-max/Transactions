@@ -458,21 +458,28 @@ function toDateKey(date) {
 // ============================================================
 
 /**
- * The Shortcut posts, as JSON:
+ * The Shortcut posts, as JSON, to WEB_APP_URL?token=<WEBHOOK_SECRET>:
  *
- *   { "timestamp": "2026-05-24T20:15:00+08:00", "amount": "454",
- *     "last4": "1234", "bank": "EastWest", "note": "SM SUPERMARKET" }
+ *   { "timestamp": "2026-10-10T15:41:00+08:00", "amount": "69.00", "last4": "",
+ *     "note": "TikTok Shop Seller",
+ *     "raw": "A MariBank Credit Card transaction of PHP 69.00 at TikTok Shop …" }
  *
- * to WEB_APP_URL?token=<WEBHOOK_SECRET>. The row it produces is the same shape
- * the web app writes: Timestamp now, Date the purchase day at midnight, Card
- * the card's name, Note the merchant (or the card name when there is none).
+ * "raw" is the whole notification (older Shortcuts without it fall back to
+ * "note"). A row is written only for a charge on a card saved in the web app:
  *
- * The card is resolved against the "Cards" sheet, which the web app keeps in
- * step with its own list (see resolveCard): by last 4, else by the card name
- * nearest to "bank", else a new card — "<bank> ••<last4>", or just "<bank>"
- * without a last 4 — which the web app adds to its list on its next load.
+ *   1. card    a saved card's last 4 in the notification, else a saved card's
+ *              FULL name ("MariBank Credit Card" matches "Mari Bank Credit Card",
+ *              but a notification saying only "MariBank" does not)
+ *              → no saved card: "ignored", and no AI call is made
+ *   2. amount  the phone's, else the first PHP / ₱ / P amount in the text → else 400
+ *   3. same card + amount + note on the same day within 2 minutes → "duplicate"
+ *   4. AI      Claude Haiku 5.5 answers one letter: is this a charge (money out)?
+ *              N → "ignored"; no answer → 503 and nothing written
+ *   5. one row in the usual Timestamp | Date | Amount | Card | Note shape
  *
- * Apps Script always answers HTTP 200, so the outcome is in "code" / "status".
+ * Steps 1–3 cost nothing, so the AI is asked only about notifications that
+ * would otherwise be written. Apps Script always answers HTTP 200; the outcome
+ * is in "code" / "status".
  */
 const CARDS_SHEET = "Cards";
 const CARDS_HEADERS = ["ID", "Bank", "Last4", "Name", "Source", "Created"];
@@ -511,19 +518,22 @@ function handleWebhook(e) {
     });
   };
 
-  const amount = parseAmount(body.amount);
-  const last4 = String(firstValue(body.last4)).replace(/\D/g, "");
-  const bank = cleanCard(firstValue(body.bank)).slice(0, 40);
+  const raw = String(firstValue(body.raw) || firstValue(body.note))
+    .replace(/\s+/g, " ").trim().slice(0, 500);
   const note = cleanCard(firstValue(body.note)).slice(0, 120);
+  const last4 = String(firstValue(body.last4)).replace(/\D/g, "");
 
-  if (!Number.isFinite(amount) || amount <= 0) {
-    return badRequest("amount must be a number greater than zero.");
+  // 1. Only cards saved in the web app. Nothing to log otherwise, so no AI call.
+  const card = findSavedCard(readCards(), last4.length === 4 ? last4 : "", raw);
+  if (!card) {
+    return jsonResponse({ ok: true, code: 200, status: "ignored", reason: "No saved card in the notification." });
   }
-  // Anything but exactly four digits counts as no last 4.
-  const knownLast4 = last4.length === 4 ? last4 : "";
 
-  if (!knownLast4 && !bank) {
-    return badRequest("Send last4 or bank, so the card can be found.");
+  // 2. The phone's amount, else the first amount in the notification.
+  const sent = parseAmount(body.amount);
+  const amount = Math.round((sent > 0 ? sent : amountFromText(raw)) * 100) / 100;
+  if (!(amount > 0)) {
+    return badRequest("amount must be a number greater than zero.");
   }
 
   let purchasedAt = new Date(String(firstValue(body.timestamp)));
@@ -537,32 +547,26 @@ function handleWebhook(e) {
   lock.waitLock(20000);
 
   try {
-    let card = resolveCard(knownLast4, bank);
-    let created = false;
-
-    if (!card) {
-      card = addCard({
-        bank: bank,
-        last4: knownLast4,
-        name: knownLast4 ? (bank || "Card") + " ••" + knownLast4 : bank,
-        source: "shortcut"
-      });
-      created = true;
-    }
-
     const rowNote = note || card.name;
 
+    // 3. Before the AI, so a notification iOS delivers twice is not paid for twice.
     if (isRecentDuplicate(amount, card.name, rowNote, date)) {
       return jsonResponse({ ok: true, code: 200, status: "duplicate", card: card.name });
     }
 
-    // Already under the lock, so append directly rather than via saveTransaction.
-    appendTransaction(date, amount, card.name, rowNote, card.last4 || knownLast4);
+    // 4. Is it money going out? Refunds, cash in, cashback, promos and notices are not.
+    const charge = isChargeByAI(raw);
+    if (charge === null) {
+      return jsonResponse({ ok: false, code: 503, status: "unverified", error: "Could not reach the AI to verify the charge; nothing was saved." });
+    }
+    if (!charge) {
+      return jsonResponse({ ok: true, code: 200, status: "ignored", reason: "Not a charge.", card: card.name });
+    }
 
-    return jsonResponse({
-      ok: true, code: 201, status: "logged",
-      card: card.name, card_id: card.id, card_created: created
-    });
+    // Already under the lock, so append directly rather than via saveTransaction.
+    appendTransaction(date, amount, card.name, rowNote, card.last4);
+
+    return jsonResponse({ ok: true, code: 201, status: "logged", card: card.name, amount: amount, note: rowNote });
   } catch (error) {
     // The message only — never the request, which carries the token.
     console.error("handleWebhook failed: " + error.message);
@@ -678,10 +682,6 @@ function last4Of(value) {
   return digits ? ("0000" + digits).slice(-4) : "";
 }
 
-function bankKey(value) {
-  return String(value || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
-}
-
 function readCards() {
   return getCardsSheet().getDataRange().getValues().slice(1)
     .filter(function (row) { return row[0]; })
@@ -697,83 +697,149 @@ function readCards() {
 }
 
 /**
- * Card resolution:
+ * The saved card a notification is about, or null:
  *
- *   1. last 4, when given and some card has it — if two cards share it, the
- *      one whose bank or name is nearest to "bank";
- *   2. otherwise the card whose name is nearest to "bank" (nameScore);
- *   3. otherwise null, and the caller creates a card.
+ *   1. last 4  the phone's last 4, or a saved card's last 4 standing on its own
+ *              in the text ("Visa 4069", "ending in 4069"; not "4,069.00");
+ *   2. name    a saved card's FULL name, compared without case, spaces or
+ *              punctuation — "MariBank Credit Card" matches "Mari Bank credit
+ *              card" but not "MariBank". The longest name wins, so "BPI Gold"
+ *              beats "BPI". A name match is refused when the phone sent a
+ *              different last 4: that is another card from the same bank.
  */
-function resolveCard(last4, bank) {
-  const cards = readCards();
+function findSavedCard(cards, last4, raw) {
+  const byLast4 = cards.filter(function (card) {
+    return card.last4 && (card.last4 === last4 || hasLast4(raw, card.last4));
+  })[0];
+  if (byLast4) return byLast4;
 
-  if (last4) {
-    const byLast4 = cards.filter(function (card) { return card.last4 === last4; });
-    if (byLast4.length === 1) return byLast4[0];
-    if (byLast4.length > 1) return nearestByName(byLast4, bank, true) || byLast4[0];
-  }
+  const text = compactName(raw);
+  if (!text) return null;
 
-  return bank ? nearestByName(cards, bank, false) : null;
+  return cards
+    .filter(function (card) {
+      const name = compactName(card.name);
+      return name.length >= 3 && text.indexOf(name) !== -1 &&
+        !(last4 && card.last4 && card.last4 !== last4);
+    })
+    .sort(function (a, b) { return compactName(b.name).length - compactName(a.name).length; })[0] || null;
 }
 
-/** The best-scoring card for "bank"; ties go to the shorter (closer) name. */
-function nearestByName(cards, bank, includeBankField) {
-  let best = null;
-  let bestScore = 0;
-
-  cards.forEach(function (card) {
-    let score = nameScore(card.name, bank);
-    if (includeBankField) score = Math.max(score, nameScore(card.bank, bank));
-
-    if (score > bestScore ||
-        (score === bestScore && score > 0 && card.name.length < best.name.length)) {
-      best = card;
-      bestScore = score;
-    }
-  });
-
-  return best;
+function compactName(value) {
+  return String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "");
 }
+
+/** The four digits as a number of their own, not part of a longer number or an amount. */
+function hasLast4(text, digits) {
+  return new RegExp("(^|[^\\d.,])" + digits + "(?!\\d|[.,]\\d)").test(String(text || ""));
+}
+
+/** First amount after PHP / Php / ₱ / P in the text, or NaN. */
+function amountFromText(raw) {
+  const m = /(?:PHP|Php|php|₱|(?:^|[^A-Za-z])P)\s?(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)/.exec(String(raw || ""));
+  return m ? parseFloat(m[1].replace(/,/g, "")) : NaN;
+}
+
+
+// ============================================================
+// AI CHARGE CHECK (Claude Haiku 5.5, direct or through OpenRouter)
+// ============================================================
 
 /**
- * How near a card name is to the bank the Shortcut sent, compared without
- * case, spaces or punctuation. 0 means not a match at all.
+ * Script Properties (Project Settings → Script Properties), set ONE of:
  *
- *   4  same            "Union Bank"  ~ "UNIONBANK"
- *   3  starts with     "BDO"         ~ "BDO Gold"
- *   2  contains        "Gold"        ~ "BDO Gold"
- *   1  1–2 typos       "Eastwset"    ~ "EastWest"   (names of 5+ characters
- *                                                    only, so BPI ≠ BDO)
+ *   ANTHROPIC_API_KEY   calls Anthropic directly        (used if both are set)
+ *   OPENROUTER_API_KEY  calls the same model via OpenRouter
+ *   OPENROUTER_MODEL    optional: OpenRouter's id for Haiku 5.5, if it differs
+ *                       from the default below
+ *
+ * Kept as cheap as possible: a two-line instruction, the notification text
+ * only (max 500 characters), thinking off, and a one-letter answer — roughly
+ * 100–150 input tokens and 1 output token per call.
  */
-function nameScore(name, bank) {
-  const a = bankKey(name);
-  const b = bankKey(bank);
-  if (!a || !b) return 0;
+const AI_MODEL = "claude-haiku-5-5";
+const OPENROUTER_DEFAULT_MODEL = "anthropic/claude-haiku-5.5";
+const AI_INSTRUCTION =
+  "Reply Y if this phone notification is a card charge: money spent, paid or deducted. " +
+  "Reply N for anything else: refund, reversal, cash in, received or added funds, cashback, rewards, promo, OTP, login or account notice.";
 
-  if (a === b) return 4;
-  if (a.indexOf(b) === 0 || b.indexOf(a) === 0) return 3;
-  if (a.indexOf(b) !== -1 || b.indexOf(a) !== -1) return 2;
-  if (Math.min(a.length, b.length) >= 5 && editDistance(a, b) <= 2) return 1;
-  return 0;
-}
-
-function editDistance(a, b) {
-  let previous = [];
-  for (var j = 0; j <= b.length; j++) previous[j] = j;
-
-  for (var i = 1; i <= a.length; i++) {
-    const current = [i];
-    for (var k = 1; k <= b.length; k++) {
-      current[k] = Math.min(
-        previous[k] + 1,
-        current[k - 1] + 1,
-        previous[k - 1] + (a[i - 1] === b[k - 1] ? 0 : 1)
-      );
-    }
-    previous = current;
+/** true = a charge, false = not a charge, null = no usable answer. */
+function isChargeByAI(raw) {
+  const props = PropertiesService.getScriptProperties();
+  const anthropicKey = props.getProperty("ANTHROPIC_API_KEY");
+  const openrouterKey = props.getProperty("OPENROUTER_API_KEY");
+  if (!raw || (!anthropicKey && !openrouterKey)) {
+    console.warn("AI check skipped: " + (raw ? "no ANTHROPIC_API_KEY or OPENROUTER_API_KEY set." : "empty notification."));
+    return null;
   }
-  return previous[b.length];
+
+  try {
+    const answer = anthropicKey ? askAnthropic(anthropicKey, raw) : askOpenRouter(openrouterKey, props.getProperty("OPENROUTER_MODEL"), raw);
+    const letter = String(answer || "").trim().charAt(0).toUpperCase();
+    return letter === "Y" ? true : letter === "N" ? false : null;
+  } catch (error) {
+    console.warn("AI check failed: " + error.message);
+    return null;
+  }
 }
+
+function askAnthropic(key, raw) {
+  const response = UrlFetchApp.fetch("https://api.anthropic.com/v1/messages", {
+    method: "post",
+    contentType: "application/json",
+    headers: { "x-api-key": key, "anthropic-version": "2023-06-01" },
+    payload: JSON.stringify({
+      model: AI_MODEL,
+      max_tokens: 5,
+      // No thinking tokens: allowed on Haiku 5.5 at effort low.
+      thinking: { type: "disabled" },
+      output_config: { effort: "low" },
+      system: AI_INSTRUCTION,
+      messages: [{ role: "user", content: raw }]
+    }),
+    muteHttpExceptions: true
+  });
+
+  if (response.getResponseCode() !== 200) {
+    throw new Error("Anthropic HTTP " + response.getResponseCode());
+  }
+  const message = JSON.parse(response.getContentText());
+  if (message.stop_reason === "refusal") return "";
+
+  return (message.content || [])
+    .filter(function (block) { return block.type === "text"; })
+    .map(function (block) { return block.text; })
+    .join("");
+}
+
+function askOpenRouter(key, model, raw) {
+  const response = UrlFetchApp.fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "post",
+    contentType: "application/json",
+    headers: { Authorization: "Bearer " + key },
+    payload: JSON.stringify({
+      model: model || OPENROUTER_DEFAULT_MODEL,
+      max_tokens: 5,
+      reasoning: { enabled: false },
+      messages: [
+        { role: "system", content: AI_INSTRUCTION },
+        { role: "user", content: raw }
+      ]
+    }),
+    muteHttpExceptions: true
+  });
+
+  if (response.getResponseCode() !== 200) {
+    throw new Error("OpenRouter HTTP " + response.getResponseCode());
+  }
+  const choice = (JSON.parse(response.getContentText()).choices || [])[0];
+  return choice && choice.message ? choice.message.content : "";
+}
+
+
+// ============================================================
+// CARDS SHEET (continued)
+// ============================================================
 
 function addCard(card) {
   const record = {

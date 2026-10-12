@@ -2,14 +2,17 @@
 
 ## Goal
 
-An iOS 27 Shortcut fires when a bank app shows a purchase notification on the
-iPhone, extracts the details, and POSTs them to this app. The app:
+An iOS 27 Shortcut fires when a bank app shows a notification on the iPhone and
+POSTs it to this app. A row is written **only for a charge on a card saved in
+the web app**:
 
-1. finds the card by its **last 4 digits**;
-2. if there is no last 4, or no card has it, finds the card whose **name is
-   nearest to the bank** the Shortcut sent;
-3. if nothing matches, **creates a card** from the bank name (+ last 4),
-   then logs the transaction to it. See [Card resolution](#card-resolution).
+1. the notification names a saved card — by its **last 4 digits**, or else by
+   the card's **full name**;
+2. **Claude Haiku 5.5** confirms it is a charge (money out), not a refund, cash
+   in, cashback, promo or notice.
+
+Anything else is ignored: no card is created and nothing is written. See
+[Processing](#processing).
 
 ## How it fits this app
 
@@ -23,6 +26,7 @@ Script web app in `apps-script/Code.gs`. The endpoint is that web app, so:
 | `WEBHOOK_SECRET` env var | A **Script Property** named `WEBHOOK_SECRET`. |
 | HTTP 201 / 400 / 401 | Always HTTP 200; the outcome is the `code` and `status` fields of the JSON. |
 | `cards` table | A **Cards** tab, created on first use. The web app keeps cards in the browser and copies them there so the script can search them. |
+| AI provider key | A Script Property: `ANTHROPIC_API_KEY`, or `OPENROUTER_API_KEY`. |
 
 ## Endpoint
 
@@ -33,18 +37,20 @@ Content-Type: application/json
 
 ### Request body
 
-All values are strings.
+All values are strings; any may be empty.
 
 ```json
-{ "timestamp": "2026-05-24T20:15:00+08:00", "amount": "454", "last4": "1234", "bank": "EastWest", "note": "SM SUPERMARKET" }
+{ "timestamp": "2026-10-12T15:41:00+08:00", "amount": "69.00", "last4": "",
+  "note": "TikTok Shop Seller",
+  "raw": "A MariBank Credit Card transaction of PHP 69.00 at TikTok Shop Seller was completed." }
 ```
 
 | Field | Rules |
 |---|---|
+| `raw` | The whole notification (title + body). Used to find the card and sent to the AI. Missing → `note` is used instead. Capped at 500 characters. |
 | `timestamp` | ISO 8601 time of the purchase. Missing or invalid → now. |
-| `amount` | Required, > 0. Commas and `₱` are tolerated. |
+| `amount` | Commas and `₱` tolerated. Missing or invalid → the first PHP / ₱ / P amount in `raw`. |
 | `last4` | Optional. Anything but exactly 4 digits counts as missing. |
-| `bank` | Matched against card names when the last 4 doesn't find a card; names a new card. |
 | `note` | Merchant. Empty → the card's name, like rows entered by hand. |
 
 ### Row written to Transactions
@@ -59,7 +65,7 @@ Same columns the web app writes:
 when F is empty, otherwise after the last used column, so nothing of yours is
 overwritten. It's plain text, so `0469` keeps its zero. Every new row gets the
 card's last 4, whether it comes from the Shortcut or the web app. It stays
-blank only for a card with no last 4 yet (one created from a bank name alone).
+blank only for a saved card that has no last 4.
 
 **Older rows** without a last 4 are filled in automatically each time the web
 app opens (when it syncs its cards): the Card cell is matched to a card on the
@@ -69,50 +75,56 @@ for a card that no longer exists stay blank. To run it by hand, pick
 
 ### Processing
 
+Cheapest checks first, so the AI is only asked about notifications that would
+otherwise be written:
+
 1. `token` must equal `WEBHOOK_SECRET` (constant-time compare) → else `401`.
-2. `amount` > 0, and at least one of `last4` / `bank` → else `400`.
-3. Resolve the card (below).
-4. None → add a card, source `shortcut`: `"<bank> ••<last4>"` (e.g. `BPI ••1234`)
-   when there is a last 4, otherwise just `"<bank>"`. The web app adds it to its
-   card list on its next load, with a placeholder statement/due schedule (and,
-   without a last 4, no digits) to set in the card editor.
-5. Same card + amount + note + day already written in the last 2 minutes → `duplicate`
-   (iOS can fire one notification twice).
+2. **Card** (no cost, below). No saved card → `ignored`, **no AI call**.
+3. **Amount** > 0 → else `400`, echoing what was received.
+4. **Duplicate** (no cost): same card + amount + note + day written in the last
+   2 minutes → `duplicate`, no AI call (iOS can deliver one notification twice).
+5. **AI charge check**: one Claude Haiku 5.5 call. `N` → `ignored`. No usable
+   answer (no key set, network or API error) → `code: 503`, **nothing written**.
 6. Append the row.
 
 ### Card resolution
 
-Cards are looked up on the Cards tab, in this order:
+Only cards on the Cards tab (the cards saved in the web app) are considered.
 
-1. **Last 4.** When `last4` is given and a card has it, that card. If two
-   cards share it, the one whose name or bank is nearest to `bank`.
-2. **Nearest name.** When there is no last 4, or no card has it, the card
-   whose name is nearest to `bank`. Names are compared ignoring case, spaces
-   and punctuation, and scored:
+1. **Last 4.** The phone's `last4`, or a saved card's last 4 standing on its own
+   in `raw` (`Visa 4069`, `ending in 4069`). Digits inside a number or an amount
+   don't count: `PHP 4,069.00` does not match a card ending 4069.
+2. **Full card name.** Compared without case, spaces or punctuation. A card saved
+   as `MariBank Credit Card` matches `MariBank Credit Card` and
+   `Mari Bank credit card`, but **not** a notification that says only `MariBank`.
+   The longest matching name wins (`BPI Gold` over `BPI`). A name match is refused
+   when the phone sent a last 4 that differs from the card's: that is another
+   card from the same bank.
+3. **Nothing matched** → `ignored`. No card is created.
 
-   | Score | Rule | Example (`bank` → card name) |
-   |---|---|---|
-   | 4 | Same | `Union Bank` → `UnionBank` |
-   | 3 | One starts with the other | `BDO` → `BDO Gold` |
-   | 2 | One contains the other | `Gold` → `BDO Gold` |
-   | 1 | 1–2 typos, names of 5+ characters only | `Eastwset` → `EastWest` |
+### AI charge check (Claude Haiku 5.5)
 
-   Highest score wins; on a tie, the shortest name. Short names never
-   fuzzy-match each other, so `BPI` does not match `BDO`.
-3. **Nothing matched** → create a card (step 4 above).
+| | Anthropic (`ANTHROPIC_API_KEY`) | OpenRouter (`OPENROUTER_API_KEY`) |
+|---|---|---|
+| Endpoint | `api.anthropic.com/v1/messages` | `openrouter.ai/api/v1/chat/completions` |
+| Model | `claude-haiku-5-5` | `anthropic/claude-haiku-5.5`, or the `OPENROUTER_MODEL` property |
 
-Note that an unknown last 4 still falls through to the name: a new EastWest
-card sent with `"last4":"1234","bank":"EastWest"` logs to the existing
-`EastWest` card rather than creating `EastWest ••1234`.
+If both keys are set, Anthropic is used. To keep cost minimal each call sends a
+two-sentence instruction plus the notification text only (≤ 500 characters),
+with thinking turned off and `max_tokens: 5`; the model answers one letter, `Y`
+or `N`. That is roughly 100–150 input tokens and 1 output token per call — at
+Haiku 5.5's $0.10 / $0.50 per million tokens, about ₱0.001 per notification.
 
 ### Responses
 
 ```json
-{ "ok": true,  "code": 201, "status": "logged", "card": "EastWest", "card_id": "EW", "card_created": false }
-{ "ok": true,  "code": 201, "status": "logged", "card": "BPI ••1234", "card_id": "SHORTCUT_…", "card_created": true }
+{ "ok": true,  "code": 201, "status": "logged", "card": "EastWest", "amount": 454, "note": "SM SUPERMARKET" }
+{ "ok": true,  "code": 200, "status": "ignored", "reason": "No saved card in the notification." }
+{ "ok": true,  "code": 200, "status": "ignored", "reason": "Not a charge.", "card": "EastWest" }
 { "ok": true,  "code": 200, "status": "duplicate", "card": "EastWest" }
-{ "ok": false, "code": 400, "error": "…" }
+{ "ok": false, "code": 400, "error": "…", "received": { … } }
 { "ok": false, "code": 401, "error": "Unauthorized." }
+{ "ok": false, "code": 503, "status": "unverified", "error": "Could not reach the AI to verify the charge; nothing was saved." }
 ```
 
 ### Cards tab
@@ -130,7 +142,11 @@ card sent with `"last4":"1234","bank":"EastWest"` logs to the existing
 1. In the Google Sheet: **Extensions → Apps Script**. Replace `Code.gs` with
    `apps-script/Code.gs` from this repo.
 2. **Project Settings → Script Properties → Add script property**:
-   `WEBHOOK_SECRET` = a long random string (e.g. `openssl rand -hex 24`).
+   - `WEBHOOK_SECRET` = a long random string (e.g. `openssl rand -hex 24`).
+   - `ANTHROPIC_API_KEY` (from console.anthropic.com) **or** `OPENROUTER_API_KEY`
+     (from openrouter.ai/keys). With OpenRouter, check its model id for Claude
+     Haiku 5.5 on openrouter.ai/models; if it isn't `anthropic/claude-haiku-5.5`,
+     add `OPENROUTER_MODEL` with the right id.
 3. **Project Settings → Time zone**: `(GMT+08:00) Manila`. The purchase day is
    worked out in the script's time zone; in UTC, a purchase before 8 AM would
    land on the previous day.
@@ -146,19 +162,20 @@ redirect, which fails.
 ```bash
 curl -L "https://script.google.com/macros/s/AKfycbyndwZXzpAAx2voFy8yvQEjr-0DC7NzP8RocThd76Qbyd-qx_lEneheHBYA7AeMbMQL/exec?token=$WEBHOOK_SECRET" \
   -H "Content-Type: application/json" \
-  -d '{"timestamp":"2026-05-24T20:15:00+08:00","amount":"454","last4":"3002","bank":"EastWest","note":""}'
+  -d '{"timestamp":"2026-10-12T15:41:00+08:00","amount":"454.00","last4":"3002","note":"SM SUPERMARKET","raw":"EastWest: Your card ending 3002 was used for PHP 454.00 at SM SUPERMARKET."}'
 ```
 
 | Case | Expect |
 |---|---|
-| Last 4 of an existing card | `logged`, `card_created: false` |
-| New last 4 | `logged`, `card_created: true`; card appears in the app on next load |
-| Same request again within 2 minutes | `duplicate` |
-| No `last4`, `bank` near an existing card name | `logged` to that card |
-| No `last4`, `bank` matching no card | `logged`, `card_created: true`, card named `<bank>` |
-| Neither `last4` nor `bank` | `code: 400` |
+| Saved card's last 4, a purchase | `logged` |
+| Saved card's last 4 only in `raw` (`Your Visa 4069 has been charged P 71.00…`) | `logged` |
+| No last 4, `raw` has the full card name (`Mari Bank Credit Card`) | `logged` |
+| `raw` has only `MariBank`, card saved as `MariBank Credit Card` | `ignored`, no AI call |
+| Saved card, but a refund / cash in / cashback | `ignored` ("Not a charge.") |
+| Same request again within 2 minutes | `duplicate`, no AI call |
+| No AI key set | `code: 503`, nothing written |
 | Wrong or missing token | `code: 401` |
-| `amount` missing or `0` | `code: 400` |
+| No amount in `amount` or `raw` | `code: 400` |
 
 ## Privacy
 
