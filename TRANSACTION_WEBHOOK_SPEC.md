@@ -6,10 +6,10 @@ An iOS 27 Shortcut fires when a bank app shows a notification on the iPhone and
 POSTs it to this app. A row is written **only for a charge on a card saved in
 the web app**:
 
-1. the notification names a saved card — by its **last 4 digits**, or else by
+1. the notification names a saved card — by any of its saved **last-four endings**, or else by
    the card's **full name**;
-2. **Claude Haiku 5.5** confirms it is a charge (money out), not a refund, cash
-   in, cashback, promo or notice.
+2. **Claude Haiku 5.5** confirms it is an **already completed card purchase**, not an approval
+   request, pending authorization, refund, cash in, transfer, cashback, promo or notice.
 
 Anything else is ignored: no card is created and nothing is written. See
 [Processing](#processing).
@@ -47,7 +47,7 @@ All values are strings; any may be empty.
 
 | Field | Rules |
 |---|---|
-| `raw` | The whole notification (title + body). Used to find the card and sent to the AI. Missing → `note` is used instead. Capped at 500 characters. |
+| `raw` | The whole notification (title + body). Used to find the card and sent to the AI. Required (the `text` field is also accepted). Must be 1–2000 characters; missing or longer text returns `code: 400`. A merchant `note` alone is never classified as a charge. |
 | `timestamp` | ISO 8601 time of the purchase. Missing or invalid → now. |
 | `amount` | Commas and `₱` tolerated. Missing or invalid → the first PHP / ₱ / P amount in `raw`. |
 | `last4` | Optional. Anything but exactly 4 digits counts as missing. |
@@ -79,27 +79,30 @@ Cheapest checks first, so the AI is only asked about notifications that would
 otherwise be written:
 
 1. `token` must equal `WEBHOOK_SECRET` (constant-time compare) → else `401`.
-2. **Card** (no cost, below). No saved card → `ignored`, **no AI call**.
-3. **Amount** > 0 → else `400`, echoing what was received.
-4. **Duplicate** (no cost): same card + amount + note + day written in the last
+2. **Notification**: require the full `raw`/`text`. Explicit approval/verification requests,
+   pending or unsuccessful transactions, refunds, added funds, transfers and promotions
+   return `ignored` before any AI call. A request mentioning a price is not a charge.
+3. **Card** (no cost, below). No saved card → `ignored`, **no AI call**.
+4. **Amount** > 0 → else `400`, echoing what was received.
+5. **Duplicate** (no cost): same card + amount + normalized merchant note + day written in the last
    2 minutes → `duplicate`, no AI call (iOS can deliver one notification twice).
-5. **AI charge check**: one Claude Haiku 5.5 call. `N` → `ignored`. No usable
+6. **AI charge check**: one Claude Haiku 5.5 call. `Y` is accepted only as an exact single-letter answer from a successful API response. `N` → `ignored`. No usable
    answer (no key set, network or API error) → `code: 503`, **nothing written**.
-6. Append the row.
+7. Append the row.
 
 ### Card resolution
 
 Only cards on the Cards tab (the cards saved in the web app) are considered.
 
-1. **Last 4.** The phone's `last4`, or a saved card's last 4 standing on its own
+1. **Last 4.** The phone's `last4` can match any ending saved for the card. If supplied, it is authoritative: an unsaved ending never falls back to a bank name or another number in the text. Without it, match a saved ending standing on its own
    in `raw` (`Visa 4069`, `ending in 4069`). Digits inside a number or an amount
    don't count: `PHP 4,069.00` does not match a card ending 4069.
 2. **Full card name.** Compared without case, spaces or punctuation. A card saved
    as `MariBank Credit Card` matches `MariBank Credit Card` and
    `Mari Bank credit card`, but **not** a notification that says only `MariBank`.
    The longest matching name wins (`BPI Gold` over `BPI`). A name match is refused
-   when the phone sent a last 4 that differs from the card's: that is another
-   card from the same bank.
+   when the phone sent a last 4 that differs from the saved endings: that is another
+   card from the same bank. Ambiguous endings shared by different saved cards are refused.
 3. **Nothing matched** → `ignored`. No card is created.
 
 ### AI charge check (Claude Haiku 5.5)
@@ -109,11 +112,19 @@ Only cards on the Cards tab (the cards saved in the web app) are considered.
 | Endpoint | `api.anthropic.com/v1/messages` | `openrouter.ai/api/v1/chat/completions` |
 | Model | `claude-haiku-5-5` | `anthropic/claude-haiku-5.5`, or the `OPENROUTER_MODEL` property |
 
-If both keys are set, Anthropic is used. To keep cost minimal each call sends a
-two-sentence instruction plus the notification text only (≤ 500 characters),
+If both keys are set, Anthropic is used. To keep cost minimal each call sends an
+explicit completed-purchase instruction plus the notification text only (≤ 2000 characters),
 with thinking turned off and `max_tokens: 5`; the model answers one letter, `Y`
-or `N`. That is roughly 100–150 input tokens and 1 output token per call — at
-Haiku 5.5's $0.10 / $0.50 per million tokens, about ₱0.001 per notification.
+or `N`. Input tokens depend on notification length; usage is recorded from the provider response.
+
+### Approval versus completed charge
+
+`Confirm your PHP 10 purchase. Tap Yes` and `Did you make this transaction?`
+are ignored even if a provider would incorrectly classify them as charges.
+`Your card was charged PHP 10 at Shop. Purchase completed` is eligible for AI
+verification. A successful purchase confirmation is the event to log; the earlier
+request for approval is not. Duplicate checking remains merchant-specific so two
+different genuine PHP 10 purchases are not discarded just because the prices match.
 
 ### AI usage and status (the web app's **AI** menu)
 
@@ -151,6 +162,19 @@ for 30 seconds; the panel refreshes every 30 seconds while open.
 ### Cards tab
 
 `ID | Bank | Last4 | Name | Source | Created`
+
+Edit any card and press **+** next to **Last four digits** to add another physical
+or virtual card ending. Each must have exactly four digits and must not already
+belong to another card; remove extra endings with the minus control. All endings
+share one card name, billing schedule, credit limit and statement. The first ending
+remains the primary `last4` for older clients and manually entered transactions.
+The app also saves a `last4s` array in its local/cloud state and sync payload.
+
+The Cards sheet keeps one row per card and stores its endings as comma-separated
+text in the existing Last4 column (for example `3002, 0123`). Existing single-ending
+rows still work, including numeric sheet cells whose leading zeros were lost.
+Webhook transaction rows store the actual matched ending. A name-only match and
+backfilling old rows use the primary ending because the original ending is unknown.
 
 - The web app sends its full card list on load and whenever a card is saved
   (`action=syncCards`), and removes a card's row when it is deleted
@@ -202,3 +226,34 @@ curl -L "https://script.google.com/macros/s/AKfycbyndwZXzpAAx2voFy8yvQEjr-0DC7Nz
 
 `?action=cards` (like the existing `?action=entries`) is readable by anyone with
 the web app URL. Only the webhook requires the token.
+
+## Applying this fix
+
+1. Deploy the updated `index.html` through the site's normal hosting workflow.
+2. Replace the bound Apps Script project's code with `apps-script/Code.gs` and
+   edit the **existing** web-app deployment to use a **new version**, keeping its URL.
+   Merely saving the script editor does not update an existing deployment.
+3. Open the updated web app and save a card with its additional endings so the
+   Cards sheet and shared state receive them. Deploy backend before using aliases.
+4. In **Log Card Txn → Get Contents of URL**, use POST with a JSON request body.
+   Include `raw` = the entire `Msg` notification, `amount` = `Amount`, `last4` =
+   `Last4`, and `note` = `Merchant`. Keep the webhook token in the URL. The shown
+   regex/merchant extraction cannot determine whether approval was requested;
+   the backend must receive the original notification. The screenshots do not
+   show the expanded request-body fields, so verify that `raw` is present.
+5. Send an approval request and then a completed purchase using a test card/deployment:
+   expect `ignored`, then `logged`, and exactly one row. Replaying the completed
+   notification within two minutes should return `duplicate`.
+
+Existing duplicate spreadsheet rows are not deleted automatically.
+
+## Local regression checks
+
+- `node --test tests/webhook.test.cjs` uses in-memory Apps Script services and
+  mocked provider responses; it never contacts a real spreadsheet or AI API.
+- Start `python3 -m http.server 8000 --bind 127.0.0.1 --directory /workspace/Transactions`,
+  then run `python3 tests/test_card_endings.py -v` from the checkout. This requires
+  Python Playwright and system Chromium (`CHROMIUM_PATH` can override its path).
+  All external browser traffic is intercepted. It verifies adding/removing endings,
+  validation, cloud-state restoration, local persistence, outgoing sync payloads,
+  built-in/custom cards and desktop/mobile layout.

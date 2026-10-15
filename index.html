@@ -533,6 +533,14 @@
     .custom-card-edit:active,.card-statement-btn:active{transform:scale(.9);transition-duration:80ms}
     .custom-card-edit svg,.card-statement-btn svg{width:17px;height:17px}
 
+    .custom-card-form .field-row{align-items:start}
+    .card-endings{display:grid;gap:var(--space-2)}
+    .card-ending-row{display:flex;align-items:center;gap:var(--space-2);min-width:0}
+    .card-ending-row input{flex:1;width:100%}
+    .ending-button{display:grid;place-items:center;flex:0 0 44px;width:44px;height:44px;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface);color:var(--primary);cursor:pointer}
+    .ending-button:hover{background:var(--primary-soft)}
+    .ending-button svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round}
+    .card-id .meta,.card-list-main .meta,.choice small{overflow-wrap:anywhere}
     .custom-card-form{display:grid;gap:var(--space-5)}
     .form-step{display:grid;gap:var(--space-3);padding:var(--space-4);background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-lg)}
     .form-step-header{display:flex;align-items:center;gap:var(--space-3)}
@@ -731,7 +739,13 @@
             </div>
             <div class="field">
               <label for="customCardLast4">Last four digits</label>
-              <input id="customCardLast4" type="text" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" placeholder="1234" required>
+              <div class="card-endings" id="cardEndings">
+                <div class="card-ending-row">
+                  <input id="customCardLast4" type="text" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" placeholder="1234" aria-describedby="cardEndingsHelp" required>
+                  <button class="ending-button" id="addCardEnding" type="button" aria-label="Add another last four digits"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
+                </div>
+              </div>
+              <p class="field-help" id="cardEndingsHelp">Add physical or virtual card numbers with +. They share this card’s billing schedule.</p>
             </div>
           </div>
           <div class="field">
@@ -1181,6 +1195,8 @@
       cardEditorStatus: document.getElementById("cardEditorStatus"),
       customCardName: document.getElementById("customCardName"),
       customCardLast4: document.getElementById("customCardLast4"),
+      cardEndings: document.getElementById("cardEndings"),
+      addCardEnding: document.getElementById("addCardEnding"),
       customLogoPreview: document.getElementById("customLogoPreview"),
       customLogoSelector: document.getElementById("customLogoSelector"),
       customStatementDay: document.getElementById("customStatementDay"),
@@ -1477,6 +1493,25 @@
     }
 
 
+    // Keep last4 as the primary ending for older saved cards and deployments.
+    function cardLast4s(card){
+      return [...new Set([card?.last4,...(card?.last4s||[])].filter(value=>/^\d{4}$/.test(String(value))).map(String))];
+    }
+
+    function cardEndingsLabel(card){
+      return cardLast4s(card).map(digits=>`•••• ${digits}`).join(" · ");
+    }
+
+    function addCardEnding(value=""){
+      const row=document.createElement("div");
+      row.className="card-ending-row";
+      row.innerHTML=`<input type="text" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" placeholder="5678" aria-label="Additional last four digits" aria-describedby="cardEndingsHelp" required>
+        <button class="ending-button" type="button" data-remove-ending aria-label="Remove these last four digits"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg></button>`;
+      row.querySelector("input").value=value;
+      el.cardEndings.appendChild(row);
+      return row.querySelector("input");
+    }
+
     function saveCustomCards(){
       localStorage.setItem(CUSTOM_CARDS_KEY,JSON.stringify(customCards));
       saveCloudState("cards");
@@ -1570,7 +1605,7 @@
         <div class="bank-logo">${logo}</div>
         <div class="card-id">
           <h3>${escapeHtml(card.name)}</h3>
-          <div class="meta">•••• ${escapeHtml(card.last4)}</div>
+          <div class="meta">${escapeHtml(cardEndingsLabel(card))}</div>
         </div>
         <div class="card-due">
           <span class="card-due-label">Due date</span>
@@ -1621,7 +1656,7 @@
           img.src=img.dataset.defaultSrc;
         }
         const small=label.querySelector('small');
-        if(small) small.textContent=`•••• ${card.last4}`;
+        if(small) small.textContent=cardEndingsLabel(card);
         Array.from(label.childNodes).filter(node=>node.nodeType===Node.TEXT_NODE).forEach(node=>node.remove());
         label.insertBefore(document.createTextNode(card.name),small||null);
       });
@@ -1639,7 +1674,7 @@
           <input type="radio" name="card" id="choice-${card.id}" value="${card.id}">
           <label for="choice-${card.id}">
             ${card.logo?`<span class="custom-choice-logo"><img src="${escapeHtml(card.logo)}" alt=""></span>`:`<span class="custom-choice-logo">${escapeHtml(initials(card.name))}</span>`}
-            ${escapeHtml(card.name)}<small>•••• ${escapeHtml(card.last4)}</small>
+            ${escapeHtml(card.name)}<small>${escapeHtml(cardEndingsLabel(card))}</small>
           </label>`;
         el.cardChoices.appendChild(choice);
       });
@@ -1682,6 +1717,7 @@
       const card=cardId?cardById(cardId):null;
       el.cardEditorForm.reset();
       pendingCustomLogo="";
+      el.cardEndings.querySelectorAll(".card-ending-row:not(:first-child)").forEach(row=>row.remove());
       el.cardEditorStatus.textContent="";
       el.cardEditorTitle.textContent=card?`Edit ${card.name}`:"Add new card";
       el.customCardDangerZone.hidden=!card;
@@ -1690,7 +1726,8 @@
 
       if(card){
         el.customCardName.value=card.name;
-        el.customCardLast4.value=card.last4;
+        el.customCardLast4.value=cardLast4s(card)[0]||"";
+        cardLast4s(card).slice(1).forEach(digits=>addCardEnding(digits));
         el.customStatementDay.value=card.statementDay;
         el.customStatementAdjust.value=card.statementAdjust;
         el.customDueMethod.value=card.dueMethod;
@@ -1824,7 +1861,7 @@
         selected=winner;
         document.querySelectorAll('input[name="card"]').forEach(input=>input.checked=input.value===winner);
         const card=details[winner].card;
-        el.winner.innerHTML=`${escapeHtml(card.name)} <span class="last">•••• ${escapeHtml(card.last4)}</span>`;
+        el.winner.innerHTML=`${escapeHtml(card.name)} <span class="last">${escapeHtml(cardEndingsLabel(card))}</span>`;
         el.days.textContent="Safe";
         el.due.textContent=`Due: ${fmtDue(details[winner].due)}`;
         el.reason.textContent="";
@@ -1999,7 +2036,7 @@
       const total=items.reduce((sum,item)=>sum+Number(item.amount||0),0);
 
       el.statementModalTitle.textContent=`${card.name} statement`;
-      el.statementModalSubtitle.textContent=`•••• ${card.last4}`;
+      el.statementModalSubtitle.textContent=cardEndingsLabel(card);
       el.statementLogo.innerHTML=card.logo
         ? `<img src="${card.logo}" alt="">`
         : `<span class="custom-card-placeholder" style="width:100%;height:100%;display:grid;place-items:center;font-weight:800">${escapeHtml(initials(card.name))}</span>`;
@@ -2223,7 +2260,7 @@
         <div class="card-list-item">
           <div class="card-list-main">
             <strong>${escapeHtml(card.name)}</strong>
-            <span class="meta">•••• ${escapeHtml(card.last4)}</span>
+            <span class="meta">${escapeHtml(cardEndingsLabel(card))}</span>
           </div>
           <div class="card-list-limit">
             <span class="card-list-limit-label">Credit limit</span>
@@ -2535,7 +2572,18 @@
     el.cardEditorModal.addEventListener("click",event=>{if(event.target===el.cardEditorModal)closeCardEditor()});
     el.customDueMethod.addEventListener("change",updateDueValueLabel);
     el.customCardName.addEventListener("input",()=>updateLogoPreview());
-    el.customCardLast4.addEventListener("input",()=>{el.customCardLast4.value=el.customCardLast4.value.replace(/\D/g,"").slice(0,4)});
+    el.addCardEnding.addEventListener("click",()=>addCardEnding().focus());
+    el.cardEndings.addEventListener("input",event=>{
+      if(event.target.matches("input")) event.target.value=event.target.value.replace(/\D/g,"").slice(0,4);
+    });
+    el.cardEndings.addEventListener("click",event=>{
+      const button=event.target.closest("[data-remove-ending]");
+      if(!button) return;
+      const row=button.closest(".card-ending-row");
+      const previous=row.previousElementSibling.querySelector("input");
+      row.remove();
+      previous.focus();
+    });
     el.customLogoSelector.addEventListener("click",event=>{
       const button=event.target.closest("[data-logo-src]");
       if(!button) return;
@@ -2546,14 +2594,18 @@
     el.cardEditorForm.addEventListener("submit",event=>{
       event.preventDefault();
       const name=el.customCardName.value.trim();
-      const last4=el.customCardLast4.value.trim();
+      const last4s=[...el.cardEndings.querySelectorAll("input")].map(input=>input.value.trim());
+      const last4=last4s[0];
       if(!name){el.cardEditorStatus.textContent="Enter the card name.";return}
-      if(!/^\d{4}$/.test(last4)){el.cardEditorStatus.textContent="Enter exactly four card digits.";return}
+      if(last4s.some(digits=>!/^\d{4}$/.test(digits))){el.cardEditorStatus.textContent="Enter exactly four digits for each card number.";return}
+      if(new Set(last4s).size!==last4s.length){el.cardEditorStatus.textContent="Each last four digits must be different.";return}
+      const conflict=allCards().find(card=>card.id!==editingCustomCardId&&cardLast4s(card).some(digits=>last4s.includes(digits)));
+      if(conflict){el.cardEditorStatus.textContent=`Those last four digits already belong to ${conflict.name}. Use a different number so notifications match the right card.`;return}
 
       const existingCard=editingCustomCardId?cardById(editingCustomCardId):null;
       const record={
         id:editingCustomCardId||`CUSTOM_${Date.now()}`,
-        name,last4,logo:pendingCustomLogo,
+        name,last4,last4s,logo:pendingCustomLogo,
         // Cards the iPhone Shortcut created remember the bank it named.
         ...(existingCard?.bank?{bank:existingCard.bank}:{}),
         statementDay:Number(el.customStatementDay.value),
@@ -2711,7 +2763,7 @@
         let merged=false;
         if(firstSync){
           customCards.forEach(card=>{
-            if(cloudCards.some(item=>item.id===card.id||item.last4===card.last4)) return;
+            if(cloudCards.some(item=>item.id===card.id||cardLast4s(item).some(digits=>cardLast4s(card).includes(digits)))) return;
             cloudCards.push(card);
             merged=true;
           });
@@ -2816,7 +2868,7 @@
     // The Shortcut finds cards by last 4 on the sheet, so the sheet needs this
     // device's list. Rows the app does not send are left alone by the script.
     function syncCardsToSheet(){
-      const payload=allCards().map(card=>({id:card.id,name:card.name,last4:card.last4,bank:cardBank(card)}));
+      const payload=allCards().map(card=>({id:card.id,name:card.name,last4:card.last4,last4s:cardLast4s(card),bank:cardBank(card)}));
       return fetch(WEB_APP_URL,{method:"POST",mode:"no-cors",body:new URLSearchParams({action:"syncCards",payload:JSON.stringify(payload)})})
         .catch(error=>console.warn("Card sync failed",error));
     }
@@ -2830,12 +2882,12 @@
 
       const local=allCards();
       const added=(payload.cards||[]).filter(sheetCard=>
-        sheetCard.source==="shortcut"&&!local.some(card=>card.id===sheetCard.id||(sheetCard.last4&&card.last4===sheetCard.last4))
+        sheetCard.source==="shortcut"&&!local.some(card=>card.id===sheetCard.id||cardLast4s(sheetCard).some(digits=>cardLast4s(card).includes(digits)))
       );
       if(!added.length) return;
 
       added.forEach(sheetCard=>customCards.push({
-        id:sheetCard.id,name:sheetCard.name,last4:sheetCard.last4,bank:sheetCard.bank,
+        id:sheetCard.id,name:sheetCard.name,last4:sheetCard.last4,last4s:cardLast4s(sheetCard),bank:sheetCard.bank,
         logo:logoForBank(sheetCard.bank),
         statementDay:10,statementAdjust:"keep",dueMethod:"calendar_days",dueValue:17,dueAdjust:"next",safetyDays:7,
         creditLimit:null
