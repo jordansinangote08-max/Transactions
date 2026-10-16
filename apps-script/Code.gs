@@ -11,8 +11,8 @@
  *          index.html  --GET--->  ?action=state  (cards, salary schedule)
  *   auto   iOS Shortcut --POST JSON--> doPost() --> handleWebhook() --> one row
  *
- * The iOS Shortcut path is the only one that needs a secret: the WEBHOOK_SECRET
- * script property, sent as ?token=… (Apps Script cannot read request headers).
+ * The Shortcut uses WEBHOOK_SECRET. The read-only Scriptable widget uses a
+ * separate WIDGET_READ_TOKEN in a POST form body (never a URL or public code).
  *
  * This script knows nothing about any particular bank. Card names, statement
  * days, due-date rules and credit limits all live in the web app, which is
@@ -49,6 +49,12 @@ const SHEET_NAME = "Transactions";
 function doPost(e) {
   try {
     const params = (e && e.parameter) || {};
+
+    // Handle only form posts here. JSON/notification posts retain the original
+    // classified webhook path, including its independent authentication.
+    if (!isJsonBody(e) && String(params.action || "").toLowerCase() === "widget") {
+      return widgetRecommendation(params);
+    }
 
     // The iOS Shortcut sends a JSON body with ?token= on the URL; the web app
     // sends form fields and never a token or raw notification. Notification
@@ -174,6 +180,48 @@ function jsonResponse(payload) {
   return ContentService
     .createTextOutput(JSON.stringify(payload))
     .setMimeType(ContentService.MimeType.JSON);
+}
+
+/** Read-only, minimal recommendation API for Scriptable. Apps Script responses
+ * always use HTTP 200: clients MUST inspect ok and code in the JSON body.
+ * Requires the generated Recommendation.gs in this Apps Script project.
+ */
+function widgetRecommendation(params) {
+  const secret = PropertiesService.getScriptProperties().getProperty("WIDGET_READ_TOKEN");
+  const supplied = String(params.widgetToken || "");
+  if (!secret || secret.length < 32 || secret.length > 512 || supplied.length > 512) {
+    return jsonResponse({ ok: false, code: 401, error: "Unauthorized." });
+  }
+  let difference = supplied.length ^ secret.length;
+  for (let i = 0; i < secret.length; i++) {
+    difference |= (supplied.charCodeAt(i) || 0) ^ secret.charCodeAt(i);
+  }
+  if (difference !== 0) return jsonResponse({ ok: false, code: 401, error: "Unauthorized." });
+
+  try {
+    const state = readState(false);
+    // Do not invent a recommendation before this site's cards have synced.
+    if (!state.cards) return jsonResponse({ ok: true, card: null });
+    const engine = CardAdvisorRecommendation;
+    const cards = engine.cardsFromState(state.cards);
+    const today = Utilities.formatDate(new Date(), "Asia/Manila", "yyyy-MM-dd");
+    const result = engine.evaluate(cards, state.salary, today);
+    if (!result.winner) return jsonResponse({ ok: true, card: null });
+    const card = result.details[result.winner].card;
+    const name = String(card.name || "").trim();
+    // A mistakenly named card must not turn the name field into a PAN leak.
+    if (!name || name.length > 160 || /\d(?:[ -]*\d){11,}/.test(name)) {
+      throw new Error("Invalid display name");
+    }
+    const endings = [card.last4].concat(Array.isArray(card.last4s) ? card.last4s : []);
+    const last4 = endings.map(String).find(value => /^\d{4}$/.test(value)) || "";
+    const logo = engine.logoLibrary.some(item => item.src === card.logo) ? card.logo : "";
+    // Explicit projection: no account fields, limits, rules, transactions or IDs.
+    return jsonResponse({ ok: true, card: { name: name, logo: logo, last4: last4 } });
+  } catch (error) {
+    // Do not leak sheet contents, submitted tokens or backend exceptions.
+    return jsonResponse({ ok: false, code: 503, error: "Recommendation temporarily unavailable." });
+  }
 }
 
 
@@ -1305,10 +1353,14 @@ function getSettingsSheet() {
   return sheet;
 }
 
-function readState() {
+function readState(createIfMissing) {
   const state = {};
+  const sheet = createIfMissing === false
+    ? SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SETTINGS_SHEET)
+    : getSettingsSheet();
+  if (!sheet) return state;
 
-  getSettingsSheet().getDataRange().getValues().slice(1).forEach(function (row) {
+  sheet.getDataRange().getValues().slice(1).forEach(function (row) {
     const key = String(row[0]);
     if (STATE_KEYS.indexOf(key) === -1 || row[1] === "") return;
     try {

@@ -1059,6 +1059,7 @@
     </div>
   </section>
 
+  <script src="recommendation.js"></script>
   <script>
     const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbyndwZXzpAAx2voFy8yvQEjr-0DC7NzP8RocThd76Qbyd-qx_lEneheHBYA7AeMbMQL/exec";
     // "Transactions" tab published to the web as CSV (File > Share > Publish to web).
@@ -1074,29 +1075,14 @@
     // Set once this device has merged its cards into the sheet's shared copy.
     const CLOUD_SYNCED_KEY = "smartCardAdvisorCloudSynced_v1";
 
-    // GitHub Pages logo library. Put matching files inside /assets/logos/ in the repository.
-    // Add or remove entries here whenever you add more bank logos.
-    const LOGO_LIBRARY = [
-      {name:"BDO",src:"bdo.svg"},
-      {name:"BPI",src:"bpi.svg"},
-      {name:"China Bank",src:"chinabank.png"},
-      {name:"EastWest",src:"eastwest.png"},
-      {name:"Landbank",src:"landbank.png"},
-      {name:"MariBank",src:"maribank.png"},
-      {name:"Metrobank",src:"metrobank.svg"},
-      {name:"PNB",src:"pnb.svg"},
-      {name:"RCBC",src:"rcbc.png"},
-      {name:"Security Bank",src:"security-bank.svg"},
-      {name:"UnionBank",src:"unionbank.svg"},
-      {name:"Apple Pay",src:"apple-pay.svg"},
-      {name:"PayPal",src:"paypal.svg"},
-      {name:"Wise",src:"wise.svg"}
-    ];
+    // Shared logo library uses the existing root assets. Edit recommendation.js
+    // and regenerate Recommendation.gs when adding library entries.
+    const LOGO_LIBRARY = CardAdvisorRecommendation.logoLibrary;
 
     let logs = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
     let selected = "UB";
     let editingId = null;
-    let salarySettings = {frequency:"monthly",day1:24,dayA:15,dayB:30,weekday:5};
+    let salarySettings = {...CardAdvisorRecommendation.defaultSalary};
     let customCards = JSON.parse(localStorage.getItem(CUSTOM_CARDS_KEY) || "[]");
     let builtInOverrides = JSON.parse(localStorage.getItem(BUILTIN_OVERRIDES_KEY) || "{}");
     let deletedBuiltIns = new Set(JSON.parse(localStorage.getItem(DELETED_BUILTINS_KEY) || "[]"));
@@ -1339,81 +1325,8 @@
         }));
     }
 
-    function easterSunday(year){
-      const a=year%19,b=Math.floor(year/100),c=year%100,d=Math.floor(b/4),e=b%4;
-      const f=Math.floor((b+8)/25),g=Math.floor((b-f+1)/3),h=(19*a+b-d-g+15)%30;
-      const i=Math.floor(c/4),k=c%4,l=(32+2*e+2*i-h-k)%7,m=Math.floor((a+11*h+22*l)/451);
-      const month=Math.floor((h+l-7*m+114)/31);
-      const day=((h+l-7*m+114)%31)+1;
-      return new Date(year,month-1,day);
-    }
-
-    function lastMondayOfAugust(year){
-      const d=new Date(year,7,31);
-      while(d.getDay()!==1)d.setDate(d.getDate()-1);
-      return d;
-    }
-
-    function philippineHolidayKeys(year){
-      const fixed=["01-01","04-09","05-01","06-12","08-21","11-01","11-30","12-08","12-24","12-25","12-30","12-31"];
-      const keys=new Set(fixed.map(md=>`${year}-${md}`));
-      keys.add(dateKey(lastMondayOfAugust(year)));
-      const easter=easterSunday(year);
-      [-3,-2,-1].forEach(offset=>{const d=new Date(easter);d.setDate(d.getDate()+offset);keys.add(dateKey(d));});
-      const proclaimed={
-        2026:["2026-02-17","2026-03-20","2026-05-27","2026-11-02"]
-      };
-      (proclaimed[year]||[]).forEach(key=>keys.add(key));
-      return keys;
-    }
-
-    function isPhilippineHoliday(date){
-      return philippineHolidayKeys(date.getFullYear()).has(dateKey(date));
-    }
-
-    function isBusinessDay(date){
-      const day=date.getDay();
-      return day!==0&&day!==6&&!isPhilippineHoliday(date);
-    }
-
-    function moveToPreviousBusinessDay(date){
-      const d=new Date(date);
-      while(!isBusinessDay(d))d.setDate(d.getDate()-1);
-      return d;
-    }
-
-    function moveToNextBusinessDay(date){
-      const d=new Date(date);
-      while(!isBusinessDay(d))d.setDate(d.getDate()+1);
-      return d;
-    }
-
-    function addBusinessDays(date,count){
-      const d=new Date(date);
-      let remaining=Math.max(0,Number(count)||0);
-      while(remaining>0){
-        d.setDate(d.getDate()+1);
-        if(isBusinessDay(d)) remaining--;
-      }
-      return d;
-    }
-
-    function statementForDay(transactionDate,dayOfMonth,adjuster=null){
-      let raw=new Date(transactionDate.getFullYear(),transactionDate.getMonth(),dayOfMonth);
-      let statement=adjuster?adjuster(raw):raw;
-      if(transactionDate>statement){
-        raw=new Date(transactionDate.getFullYear(),transactionDate.getMonth()+1,dayOfMonth);
-        statement=adjuster?adjuster(raw):raw;
-      }
-      return statement;
-    }
-
-    function daysUntil(due,from){
-      return Math.ceil((due-from)/86400000);
-    }
-
     function clampSalaryDay(value){
-      return Math.min(31,Math.max(1,Number(value)||1));
+      return CardAdvisorRecommendation.clampSalaryDay(value);
     }
 
     function loadSalarySettings(){
@@ -1455,43 +1368,13 @@
       refreshBillsTotal();
     }
 
-    function dateForMonthDay(year,month,day){
-      const lastDay=new Date(year,month+1,0).getDate();
-      return new Date(year,month,Math.min(day,lastDay));
-    }
-
     function salaryDatesBetween(fromDate,toDate){
-      const dates=[];
-      if(!(fromDate instanceof Date)||!(toDate instanceof Date)||toDate<=fromDate) return dates;
-
-      if(salarySettings.frequency==="weekly"){
-        const target=Number(salarySettings.weekday);
-        const cursor=new Date(fromDate);
-        cursor.setDate(cursor.getDate()+1);
-        while(cursor<toDate){
-          if(cursor.getDay()===target) dates.push(new Date(cursor));
-          cursor.setDate(cursor.getDate()+1);
-        }
-        return dates;
-      }
-
-      const monthCursor=new Date(fromDate.getFullYear(),fromDate.getMonth(),1);
-      const endMonth=new Date(toDate.getFullYear(),toDate.getMonth(),1);
-      while(monthCursor<=endMonth){
-        const year=monthCursor.getFullYear();
-        const month=monthCursor.getMonth();
-        const days=salarySettings.frequency==="twice"
-          ? [salarySettings.dayA,salarySettings.dayB]
-          : [salarySettings.day1];
-        [...new Set(days.map(clampSalaryDay))].forEach(day=>{
-          const candidate=dateForMonthDay(year,month,day);
-          if(candidate>fromDate&&candidate<toDate) dates.push(candidate);
-        });
-        monthCursor.setMonth(monthCursor.getMonth()+1);
-      }
-      return dates.sort((a,b)=>a-b);
+      if(!(fromDate instanceof Date)||!(toDate instanceof Date)||toDate<=fromDate) return [];
+      return CardAdvisorRecommendation.salaryDatesBetween(
+        CardAdvisorRecommendation.parseDate(dateKey(fromDate)),
+        CardAdvisorRecommendation.parseDate(dateKey(toDate)),salarySettings
+      ).map(date=>parseDate(CardAdvisorRecommendation.dateKey(date)));
     }
-
 
     // Keep last4 as the primary ending for older saved cards and deployments.
     function cardLast4s(card){
@@ -1517,38 +1400,13 @@
       saveCloudState("cards");
     }
 
-    function adjustBusinessDate(date,rule){
-      if(rule==="previous") return moveToPreviousBusinessDay(date);
-      if(rule==="next") return moveToNextBusinessDay(date);
-      return new Date(date);
-    }
-
     function calcCustomCard(card,date){
-      const statement=statementForDay(
-        date,
-        Number(card.statementDay),
-        original=>adjustBusinessDate(original,card.statementAdjust)
-      );
-      let originalDue;
-      if(card.dueMethod==="fixed_next_month"){
-        const targetMonth=new Date(statement.getFullYear(),statement.getMonth()+1,1);
-        const lastDay=new Date(targetMonth.getFullYear(),targetMonth.getMonth()+1,0).getDate();
-        originalDue=new Date(targetMonth.getFullYear(),targetMonth.getMonth(),Math.min(lastDay,Number(card.dueValue)));
-      }else if(card.dueMethod==="business_days"){
-        originalDue=addBusinessDays(statement,Number(card.dueValue));
-      }else{
-        originalDue=new Date(statement);
-        originalDue.setDate(originalDue.getDate()+Number(card.dueValue));
-      }
-      return {statement,due:adjustBusinessDate(originalDue,card.dueAdjust)};
+      const result=CardAdvisorRecommendation.calcCustomCard(card,CardAdvisorRecommendation.parseDate(dateKey(date)));
+      return {statement:parseDate(CardAdvisorRecommendation.dateKey(result.statement)),due:parseDate(CardAdvisorRecommendation.dateKey(result.due))};
     }
 
     function builtInDefaults(){
-      return [
-        {id:"EW",name:"EastWest",last4:"3002",logo:"eastwest.png",statementDay:21,statementAdjust:"keep",dueMethod:"fixed_next_month",dueValue:15,dueAdjust:"previous",safetyDays:7},
-        {id:"UB",name:"UnionBank",last4:"6023",logo:"unionbank.svg",statementDay:10,statementAdjust:"previous",dueMethod:"calendar_days",dueValue:17,dueAdjust:"next",safetyDays:7},
-        {id:"RCBC",name:"RCBC",last4:"4069",logo:"rcbc.png",statementDay:3,statementAdjust:"keep",dueMethod:"calendar_days",dueValue:25,dueAdjust:"next",safetyDays:7}
-      ];
+      return CardAdvisorRecommendation.builtInDefaults();
     }
 
     function saveBuiltInOverrides(){
@@ -1562,17 +1420,12 @@
     }
 
     function builtInCards(){
-      return builtInDefaults().filter(base=>!deletedBuiltIns.has(base.id)).map(base=>{
-        const merged={...base,...(builtInOverrides[base.id]||{}),id:base.id,builtIn:true};
-        return {...merged,calc:date=>calcCustomCard(merged,date)};
-      });
+      return allCards().filter(card=>card.builtIn);
     }
 
     function allCards(){
-      return [
-        ...builtInCards(),
-        ...customCards.map(card=>({...card,builtIn:false,calc:date=>calcCustomCard(card,date)}))
-      ];
+      return CardAdvisorRecommendation.cardsFromState(cloudStateValue("cards"))
+        .map(card=>({...card,calc:date=>calcCustomCard(card,date)}));
     }
 
     function cardById(id){
@@ -1815,26 +1668,13 @@
     function updateRecommendation(){
       if(!el.date.value) return;
 
-      const date=parseDate(el.date.value);
       const cards=allCards();
-      const details=Object.fromEntries(cards.map(card=>{
-        const result=card.calc(date);
-        const salaryDates=salaryDatesBetween(date,result.due);
-        const daysToStatement=daysUntil(result.statement,date);
-        const safetyDays=Number(card.safetyDays??7);
-        const nearStatement=daysToStatement>=0 && daysToStatement<=safetyDays;
-        return [card.id,{
-          card,...result,
-          days:daysUntil(result.due,date),
-          daysToStatement,nearStatement,salaryDates,
-          salarySafe:salaryDates.length>0
-        }];
-      }));
-
-      const eligible=cards.map(card=>card.id).filter(id=>details[id].salarySafe&&!details[id].nearStatement);
-      const winner=eligible.length
-        ? eligible.reduce((best,id)=>details[id].days>details[best].days?id:best)
-        : null;
+      const evaluation=CardAdvisorRecommendation.evaluate(cards,salarySettings,el.date.value);
+      const winner=evaluation.winner;
+      const details=Object.fromEntries(Object.entries(evaluation.details).map(([id,item])=>[id,{
+        ...item,statement:parseDate(CardAdvisorRecommendation.dateKey(item.statement)),
+        due:parseDate(CardAdvisorRecommendation.dateKey(item.due))
+      }]));
 
       cards.forEach(card=>{
         const item=details[card.id];
