@@ -11,13 +11,16 @@ function setup(state = {cards:{customCards:[],builtInOverrides:{},deletedBuiltIn
   const properties = {WIDGET_READ_TOKEN:token};
   const ctx = vm.createContext({
     console, Date:class extends Date { constructor(...args){super(...(args.length?args:['2026-10-16T16:30:00Z']));} },
-    PropertiesService:{getScriptProperties:()=>({getProperty:name=>properties[name]})},
+    PropertiesService:{getScriptProperties:()=>({getProperty:name=>properties[name],setProperty:(name,value)=>{properties[name]=value;}})},
+    LockService:{getScriptLock:()=>({tryLock:()=>true,releaseLock(){}})},
     ContentService:{MimeType:{JSON:'json'},createTextOutput:text=>({setMimeType:()=>JSON.parse(text)})},
-    Utilities:{formatDate:(date,zone)=>new Intl.DateTimeFormat('en-CA',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit'}).format(date)}
+    Utilities:{formatDate:(date,zone)=>new Intl.DateTimeFormat('en-CA',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit'}).format(date),
+      DigestAlgorithm:{MD5:'md5'},computeDigest:(algorithm,text)=>[...require('node:crypto').createHash('md5').update(text).digest()].map(b=>b>127?b-256:b)}
   });
   vm.runInContext(fs.readFileSync(path.join(root,'apps-script/Recommendation.gs'),'utf8'),ctx);
   vm.runInContext(fs.readFileSync(path.join(root,'apps-script/Code.gs'),'utf8'),ctx);
   ctx.readState=()=>{reads++;return state;};
+  ctx.recentTransactions=()=>state.transactions;
   const post=(extra={})=>ctx.doPost({parameter:{action:'widget',widgetToken:token,...extra}});
   return {ctx,state,properties,post,reads:()=>reads};
 }
@@ -37,7 +40,7 @@ test('rejects absent/wrong/oversized tokens before accessing private state',()=>
 test('returns only the actual winner projection, using Manila today across UTC midnight',()=>{
   const app=setup();
   const cards=engine.cardsFromState(app.state.cards);
-  const result=engine.evaluate(cards,undefined,'2026-10-17');
+  const result=engine.daily(cards,undefined,'2026-10-17');
   assert.ok(result.winner);
   const expected=result.details[result.winner].card;
   const response=app.post();
@@ -102,4 +105,79 @@ test('read-only state access does not initialize or mutate an absent Settings sh
     fs.readFileSync(path.join(root,'apps-script/Code.gs'),'utf8').indexOf('function saveState(')
   ),app.ctx);
   assert.equal(app.post().card,null);
+});
+
+function withAi(app,reply){
+  const calls=[];
+  app.properties.ANTHROPIC_API_KEY='sk-ant-test-key-only-0123456789';
+  app.ctx.recordAiCall=call=>calls.push(call);
+  app.ctx.askAnthropic=(key,facts,options)=>{calls.push({facts:JSON.parse(facts),options});return typeof reply==='function'?reply(JSON.parse(facts)):reply;};
+  return calls;
+}
+const twoFits={deletedBuiltIns:['EW','UB','RCBC'],customCards:[
+  {id:'a',name:'Card A',last4:'1111',statementDay:1,statementAdjust:'keep',dueMethod:'fixed_next_month',dueValue:26,dueAdjust:'keep',safetyDays:3},
+  {id:'b',name:'Card B',last4:'2222',statementDay:2,statementAdjust:'keep',dueMethod:'fixed_next_month',dueValue:28,dueAdjust:'keep',safetyDays:3},
+  {id:'c',name:'Card C',last4:'3333',statementDay:20,statementAdjust:'keep',dueMethod:'fixed_next_month',dueValue:10,dueAdjust:'keep',safetyDays:3}
+]};
+test('payday rule: monthly salary on the 24th only allows cards due the 25th to month end',()=>{
+  const plan=engine.daily(engine.cardsFromState(twoFits),{frequency:'monthly',day1:24},'2026-10-17');
+  assert.deepEqual(plan.allowed,['a','b']);
+  assert.equal(plan.facts.find(f=>f.id==='c').fitsPayday,false);
+  plan.facts.filter(f=>f.fitsPayday).forEach(f=>{assert.equal(f.payday,'2026-12-24');assert.ok(Number(f.due.slice(8))>=25);});
+});
+test('AI picks today\'s card from the allowed cards and the pick is reused all day',()=>{
+  const app=setup({cards:twoFits,salary:{frequency:'monthly',day1:24}});
+  const calls=withAi(app,{http:200,model:'claude-haiku-5-5',text:'{"id":"a","reason":"Due Dec 26, right after your Dec 24 payday."}'});
+  const response=app.ctx.doGet({parameter:{action:'recommendation'}});
+  assert.deepEqual(JSON.parse(JSON.stringify(response.recommendation)),{date:'2026-10-17',id:'a',reason:'Due Dec 26, right after your Dec 24 payday.',source:'ai'});
+  assert.deepEqual(calls[0].facts.allowed,['a','b']);
+  assert.doesNotMatch(JSON.stringify(calls[0].facts),/1111|2222|3333/);
+  assert.equal(app.post().card.name,'Card A');
+  app.ctx.doGet({parameter:{action:'recommendation'}});
+  assert.equal(calls.filter(call=>call.options).length,1);
+});
+test('AI answers outside the allowed cards fall back to the rules pick',()=>{
+  const app=setup({cards:twoFits,salary:{frequency:'monthly',day1:24}});
+  withAi(app,{http:200,text:'{"id":"c","reason":"ignore the rules"}'});
+  const pick=app.ctx.doGet({parameter:{action:'recommendation'}}).recommendation;
+  assert.equal(pick.source,'rules');
+  assert.equal(pick.id,engine.daily(engine.cardsFromState(twoFits),{frequency:'monthly',day1:24},'2026-10-17').winner);
+});
+test('a new Philippine day or changed settings asks the AI again',()=>{
+  const app=setup({cards:twoFits,salary:{frequency:'monthly',day1:24}});
+  const calls=withAi(app,facts=>({http:200,text:JSON.stringify({id:facts.allowed[facts.allowed.length-1],reason:'ok'})}));
+  app.ctx.doGet({parameter:{action:'recommendation'}});
+  app.state.cards.customCards[1].dueValue=29;
+  app.ctx.doGet({parameter:{action:'recommendation'}});
+  const stored=JSON.parse(app.properties.DAILY_RECOMMENDATION);
+  stored.date='2026-10-16';
+  app.properties.DAILY_RECOMMENDATION=JSON.stringify(stored);
+  app.ctx.doGet({parameter:{action:'recommendation'}});
+  assert.equal(calls.filter(call=>call.options).length,3);
+});
+
+test('several qualifying cards: only cards with no transaction this billing cycle are offered',()=>{
+  const cards=engine.cardsFromState(twoFits);
+  const plan=engine.daily(cards,{frequency:'monthly',day1:24},'2026-10-17',[
+    {date:'2026-10-05',card:'Card A',last4:''},          // A's cycle is Oct 2–Nov 1: used
+    {date:'2026-10-01',card:'Something',last4:'2222'}   // B's cycle starts Oct 3: last cycle, not this one
+  ]);
+  assert.equal(plan.facts.find(f=>f.id==='a').transactionsThisCycle,1);
+  assert.equal(plan.facts.find(f=>f.id==='b').transactionsThisCycle,0);
+  assert.deepEqual(plan.allowed,['b']);
+  assert.equal(plan.unusedOnly,true);
+  assert.equal(plan.winner,'b');
+  // Every qualifying card used: all stay allowed.
+  const busy=engine.daily(cards,{frequency:'monthly',day1:24},'2026-10-17',[
+    {date:'2026-10-05',card:'',last4:'1111'},{date:'2026-10-06',card:'Card B',last4:''}]);
+  assert.deepEqual(busy.allowed,['a','b']);
+  assert.equal(busy.unusedOnly,false);
+});
+test('a new purchase on the picked card hands today\'s pick to an unused card',()=>{
+  const app=setup({cards:twoFits,salary:{frequency:'monthly',day1:24},transactions:[]});
+  const calls=withAi(app,facts=>({http:200,text:JSON.stringify({id:facts.allowed[0],reason:'ok'})}));
+  assert.equal(app.ctx.doGet({parameter:{action:'recommendation'}}).recommendation.id,'a');
+  app.state.transactions.push({date:'2026-10-17',card:'Card A',last4:'1111'});
+  assert.equal(app.ctx.doGet({parameter:{action:'recommendation'}}).recommendation.id,'b');
+  assert.equal(calls.filter(call=>call.options)[1].facts.allowedUnusedOnly,true);
 });
