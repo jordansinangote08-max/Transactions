@@ -216,28 +216,64 @@ function builtInDefaults(){
     const sameMonth=payday.getUTCFullYear()===item.due.getUTCFullYear()&&payday.getUTCMonth()===item.due.getUTCMonth();
     return sameMonth?payday:null;
   }
+  // The statement before `statement`: today's purchase belongs to the cycle
+  // (previous statement, statement]. Found with the card's own rules, so holiday
+  // and month-end adjustments match the engine exactly.
+  function previousStatement(card,date,statement){
+    const probe=new Date(date);
+    for(let i=0;i<62;i++){
+      probe.setUTCDate(probe.getUTCDate()-1);
+      const earlier=calcCustomCard(card,probe).statement;
+      if(earlier<statement) return earlier;
+    }
+    return null;
+  }
+  function cardEndings(card){
+    return [card.last4].concat(Array.isArray(card.last4s)?card.last4s:[])
+      .map(value=>String(value??"").trim()).filter(value=>/^\d{4}$/.test(value));
+  }
+  // A sheet row belongs to a card by its last 4, or by the card's name.
+  function isCardTransaction(card,transaction){
+    const last4=String(transaction.last4||"").trim();
+    if(last4&&cardEndings(card).includes(last4)) return true;
+    const name=value=>String(value||"").trim().toLowerCase();
+    return !!name(card.name)&&name(card.name)===name(transaction.card);
+  }
   // Facts for the daily AI pick. allowed = the cards the AI may choose from: cards
   // that fit the payday rule, or the older salary/statement rule when none does.
-  // winner = the rules-only pick, used whenever the AI is unavailable.
-  function daily(cards,salary,key) {
+  // With transactions ([{date:"yyyy-mm-dd",card,last4}]), allowed then narrows to
+  // the cards not yet used in their current billing cycle, if any, so every card
+  // gets used. winner = the rules-only pick, used whenever the AI is unavailable.
+  function daily(cards,salary,key,transactions) {
     const settings={...defaultSalary,...salary};
     const evaluation=evaluate(cards,settings,key);
     const facts=cards.map(card=>{
       const item=evaluation.details[card.id];
       const payday=paydayBeforeDue(item,settings);
+      const cycleStart=previousStatement(card,parseDate(key),item.statement);
+      const used=Array.isArray(transactions)
+        ? transactions.filter(transaction=>{
+            const day=String(transaction.date||"");
+            return (!cycleStart||day>dateKey(cycleStart))&&day<=dateKey(item.statement)&&isCardTransaction(card,transaction);
+          }).length
+        : null;
       return {
         id:card.id,name:String(card.name||card.id),
         statement:dateKey(item.statement),due:dateKey(item.due),
         daysToStatement:item.daysToStatement,daysToDue:item.days,nearStatement:item.nearStatement,
         payday:payday?dateKey(payday):null,
         daysFromPaydayToDue:payday?daysUntil(item.due,payday):null,
-        fitsPayday:!!payday&&!item.nearStatement
+        fitsPayday:!!payday&&!item.nearStatement,
+        cycleStart:cycleStart?dateKey(new Date(cycleStart.getTime()+86400000)):null,
+        transactionsThisCycle:used
       };
     });
     const fitting=facts.filter(fact=>fact.fitsPayday).map(fact=>fact.id);
-    const allowed=fitting.length?fitting:(evaluation.winner?cards.map(card=>card.id).filter(id=>evaluation.details[id].salarySafe&&!evaluation.details[id].nearStatement):[]);
+    const safe=fitting.length?fitting:(evaluation.winner?cards.map(card=>card.id).filter(id=>evaluation.details[id].salarySafe&&!evaluation.details[id].nearStatement):[]);
+    const unused=safe.filter(id=>facts.find(fact=>fact.id===id).transactionsThisCycle===0);
+    const allowed=unused.length?unused:safe;
     const winner=allowed.length?allowed.reduce((best,id)=>evaluation.details[id].days>evaluation.details[best].days?id:best):null;
-    return {date:key,winner,allowed,paydayFit:fitting.length>0,facts,details:evaluation.details};
+    return {date:key,winner,allowed,paydayFit:fitting.length>0,unusedOnly:unused.length>0,facts,details:evaluation.details};
   }
   return {defaultSalary,logoLibrary,builtInDefaults,cardsFromState,evaluate,daily,parseDate,dateKey,calcCustomCard,salaryDatesBetween,clampSalaryDay};
 })();

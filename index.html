@@ -2351,12 +2351,14 @@
           // the new one, then the list reloads from the sheet.
           deleteFromSheet(previous)
             .then(()=>postTransaction(log,selectedCardRecord))
-            .then(refreshHistory);
+            .then(refreshHistory)
+            .then(refreshAiRecommendation);
         }
       }else{
         const log = {id:Date.now(),addedAt:Date.now(),amount,date,card,cardName,note};
         logs.unshift(log);
-        postTransaction(log,selectedCardRecord).then(refreshHistory);
+        // A card used this cycle may hand today's pick to an unused one.
+        postTransaction(log,selectedCardRecord).then(refreshHistory).then(refreshAiRecommendation);
       }
 
       saveLocal();
@@ -2833,10 +2835,11 @@
         refreshAiRecommendation();
       });
     scheduleMidnightRecommendation();
-    // Phones pause timers in the background; catch up when the app is shown again.
+    // Phones pause timers in the background; catch up when the app is shown again,
+    // also picking up purchases the iPhone Shortcut logged meanwhile.
     document.addEventListener("visibilitychange",()=>{
-      if(document.visibilityState!=="visible"||recommendationDate===getPhilippinesDate()) return;
-      updateRecommendation();
+      if(document.visibilityState!=="visible") return;
+      if(recommendationDate!==getPhilippinesDate()) updateRecommendation();
       refreshAiRecommendation();
     });
     refreshHistory();

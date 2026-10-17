@@ -20,6 +20,7 @@ function setup(state = {cards:{customCards:[],builtInOverrides:{},deletedBuiltIn
   vm.runInContext(fs.readFileSync(path.join(root,'apps-script/Recommendation.gs'),'utf8'),ctx);
   vm.runInContext(fs.readFileSync(path.join(root,'apps-script/Code.gs'),'utf8'),ctx);
   ctx.readState=()=>{reads++;return state;};
+  ctx.recentTransactions=()=>state.transactions;
   const post=(extra={})=>ctx.doPost({parameter:{action:'widget',widgetToken:token,...extra}});
   return {ctx,state,properties,post,reads:()=>reads};
 }
@@ -153,4 +154,30 @@ test('a new Philippine day or changed settings asks the AI again',()=>{
   app.properties.DAILY_RECOMMENDATION=JSON.stringify(stored);
   app.ctx.doGet({parameter:{action:'recommendation'}});
   assert.equal(calls.filter(call=>call.options).length,3);
+});
+
+test('several qualifying cards: only cards with no transaction this billing cycle are offered',()=>{
+  const cards=engine.cardsFromState(twoFits);
+  const plan=engine.daily(cards,{frequency:'monthly',day1:24},'2026-10-17',[
+    {date:'2026-10-05',card:'Card A',last4:''},          // A's cycle is Oct 2–Nov 1: used
+    {date:'2026-10-01',card:'Something',last4:'2222'}   // B's cycle starts Oct 3: last cycle, not this one
+  ]);
+  assert.equal(plan.facts.find(f=>f.id==='a').transactionsThisCycle,1);
+  assert.equal(plan.facts.find(f=>f.id==='b').transactionsThisCycle,0);
+  assert.deepEqual(plan.allowed,['b']);
+  assert.equal(plan.unusedOnly,true);
+  assert.equal(plan.winner,'b');
+  // Every qualifying card used: all stay allowed.
+  const busy=engine.daily(cards,{frequency:'monthly',day1:24},'2026-10-17',[
+    {date:'2026-10-05',card:'',last4:'1111'},{date:'2026-10-06',card:'Card B',last4:''}]);
+  assert.deepEqual(busy.allowed,['a','b']);
+  assert.equal(busy.unusedOnly,false);
+});
+test('a new purchase on the picked card hands today\'s pick to an unused card',()=>{
+  const app=setup({cards:twoFits,salary:{frequency:'monthly',day1:24},transactions:[]});
+  const calls=withAi(app,facts=>({http:200,text:JSON.stringify({id:facts.allowed[0],reason:'ok'})}));
+  assert.equal(app.ctx.doGet({parameter:{action:'recommendation'}}).recommendation.id,'a');
+  app.state.transactions.push({date:'2026-10-17',card:'Card A',last4:'1111'});
+  assert.equal(app.ctx.doGet({parameter:{action:'recommendation'}}).recommendation.id,'b');
+  assert.equal(calls.filter(call=>call.options)[1].facts.allowedUnusedOnly,true);
 });
