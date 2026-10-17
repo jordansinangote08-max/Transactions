@@ -202,6 +202,43 @@ function builtInDefaults(){
     const winner=eligible.length?eligible.reduce((best,id)=>details[id].days>details[best].days?id:best):null;
     return {winner,details};
   }
-  return {defaultSalary,logoLibrary,builtInDefaults,cardsFromState,evaluate,parseDate,dateKey,calcCustomCard,salaryDatesBetween,clampSalaryDay};
+  // Payday-first rule for today's pick: the bill must land right after a payday so
+  // that salary pays it. Paid monthly on the 24th → due from the 25th to the end of
+  // that month. Paid twice a month or weekly → due after a payday, before the next.
+  function paydayBeforeDue(item,settings){
+    const payday=item.salaryDates[item.salaryDates.length-1];
+    if(!payday) return null;
+    if(settings.frequency==="twice"||settings.frequency==="weekly"){
+      const dayAfterDue=new Date(item.due);
+      dayAfterDue.setUTCDate(dayAfterDue.getUTCDate()+1);
+      return salaryDatesBetween(payday,dayAfterDue,settings).length?null:payday;
+    }
+    const sameMonth=payday.getUTCFullYear()===item.due.getUTCFullYear()&&payday.getUTCMonth()===item.due.getUTCMonth();
+    return sameMonth?payday:null;
+  }
+  // Facts for the daily AI pick. allowed = the cards the AI may choose from: cards
+  // that fit the payday rule, or the older salary/statement rule when none does.
+  // winner = the rules-only pick, used whenever the AI is unavailable.
+  function daily(cards,salary,key) {
+    const settings={...defaultSalary,...salary};
+    const evaluation=evaluate(cards,settings,key);
+    const facts=cards.map(card=>{
+      const item=evaluation.details[card.id];
+      const payday=paydayBeforeDue(item,settings);
+      return {
+        id:card.id,name:String(card.name||card.id),
+        statement:dateKey(item.statement),due:dateKey(item.due),
+        daysToStatement:item.daysToStatement,daysToDue:item.days,nearStatement:item.nearStatement,
+        payday:payday?dateKey(payday):null,
+        daysFromPaydayToDue:payday?daysUntil(item.due,payday):null,
+        fitsPayday:!!payday&&!item.nearStatement
+      };
+    });
+    const fitting=facts.filter(fact=>fact.fitsPayday).map(fact=>fact.id);
+    const allowed=fitting.length?fitting:(evaluation.winner?cards.map(card=>card.id).filter(id=>evaluation.details[id].salarySafe&&!evaluation.details[id].nearStatement):[]);
+    const winner=allowed.length?allowed.reduce((best,id)=>evaluation.details[id].days>evaluation.details[best].days?id:best):null;
+    return {date:key,winner,allowed,paydayFit:fitting.length>0,facts,details:evaluation.details};
+  }
+  return {defaultSalary,logoLibrary,builtInDefaults,cardsFromState,evaluate,daily,parseDate,dateKey,calcCustomCard,salaryDatesBetween,clampSalaryDay};
 })();
 if(typeof module!=="undefined"&&module.exports) module.exports=CardAdvisorRecommendation;
