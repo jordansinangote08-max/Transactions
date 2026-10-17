@@ -201,20 +201,6 @@ function builtInDefaults(){
     const winner=eligible.length?eligible.reduce((best,id)=>details[id].days>details[best].days?id:best):null;
     return {winner,details};
   }
-  // Payday-first rule for today's pick: the bill must land right after a payday so
-  // that salary pays it. Paid monthly on the 24th → due from the 25th to the end of
-  // that month. Paid twice a month or weekly → due after a payday, before the next.
-  function paydayBeforeDue(item,settings){
-    const payday=item.salaryDates[item.salaryDates.length-1];
-    if(!payday) return null;
-    if(settings.frequency==="twice"||settings.frequency==="weekly"){
-      const dayAfterDue=new Date(item.due);
-      dayAfterDue.setUTCDate(dayAfterDue.getUTCDate()+1);
-      return salaryDatesBetween(payday,dayAfterDue,settings).length?null:payday;
-    }
-    const sameMonth=payday.getUTCFullYear()===item.due.getUTCFullYear()&&payday.getUTCMonth()===item.due.getUTCMonth();
-    return sameMonth?payday:null;
-  }
   // The statement before `statement`: today's purchase belongs to the cycle
   // (previous statement, statement]. Found with the card's own rules, so holiday
   // and month-end adjustments match the engine exactly.
@@ -238,24 +224,33 @@ function builtInDefaults(){
     const name=value=>String(value||"").trim().toLowerCase();
     return !!name(card.name)&&name(card.name)===name(transaction.card);
   }
-  // Facts for the daily AI pick. allowed = the cards the AI may choose from: cards
-  // that fit the payday rule, or the older salary/statement rule when none does.
-  // With transactions ([{date:"yyyy-mm-dd",card,last4}]), allowed then narrows to
-  // the cards not yet used in their current billing cycle, if any, so every card
-  // gets used. winner = the rules-only pick, used whenever the AI is unavailable.
+  // Spends this close to the lowest one count as a tie, left to the other factors.
+  const SPEND_TIE_PESOS=500;
+  // Facts for the daily AI pick, in priority order:
+  //   1. allowed only if a payday falls before the due date (paid on the 24th →
+  //      due the 25th onwards) and the statement isn't about to close;
+  //   2. with transactions ([{date:"yyyy-mm-dd",card,last4,amount}]), only the
+  //      cards with the lowest spend this billing cycle (within SPEND_TIE_PESOS),
+  //      so every card gets used in turn;
+  //   3. the AI weighs the rest (time to pay, use of the credit limit, statement).
+  // winner = the rules-only pick (lowest spend, then longest time to pay), used
+  // whenever the AI is unavailable.
   function daily(cards,salary,key,transactions) {
     const settings={...defaultSalary,...salary};
     const evaluation=evaluate(cards,settings,key);
+    const today=parseDate(key);
     const facts=cards.map(card=>{
       const item=evaluation.details[card.id];
-      const payday=paydayBeforeDue(item,settings);
-      const cycleStart=previousStatement(card,parseDate(key),item.statement);
-      const used=Array.isArray(transactions)
+      const payday=item.salaryDates[item.salaryDates.length-1]||null;
+      const cycleStart=previousStatement(card,today,item.statement);
+      const rows=Array.isArray(transactions)
         ? transactions.filter(transaction=>{
             const day=String(transaction.date||"");
             return (!cycleStart||day>dateKey(cycleStart))&&day<=dateKey(item.statement)&&isCardTransaction(card,transaction);
-          }).length
+          })
         : null;
+      const spend=rows?Math.round(rows.reduce((sum,row)=>sum+(Number(row.amount)||0),0)*100)/100:null;
+      const limit=Number(card.creditLimit)>0?Number(card.creditLimit):null;
       return {
         id:card.id,name:String(card.name||card.id),
         statement:dateKey(item.statement),due:dateKey(item.due),
@@ -264,15 +259,23 @@ function builtInDefaults(){
         daysFromPaydayToDue:payday?daysUntil(item.due,payday):null,
         fitsPayday:!!payday&&!item.nearStatement,
         cycleStart:cycleStart?dateKey(new Date(cycleStart.getTime()+86400000)):null,
-        transactionsThisCycle:used
+        transactionsThisCycle:rows?rows.length:null,
+        spendThisCycle:spend,
+        creditLimit:limit,
+        limitUsedPercent:spend!=null&&limit?Math.round(spend/limit*1000)/10:null
       };
     });
-    const fitting=facts.filter(fact=>fact.fitsPayday).map(fact=>fact.id);
-    const safe=fitting.length?fitting:(evaluation.winner?cards.map(card=>card.id).filter(id=>evaluation.details[id].salarySafe&&!evaluation.details[id].nearStatement):[]);
-    const unused=safe.filter(id=>facts.find(fact=>fact.id===id).transactionsThisCycle===0);
-    const allowed=unused.length?unused:safe;
-    const winner=allowed.length?allowed.reduce((best,id)=>evaluation.details[id].days>evaluation.details[best].days?id:best):null;
-    return {date:key,winner,allowed,paydayFit:fitting.length>0,unusedOnly:unused.length>0,facts,details:evaluation.details};
+    const byId=Object.fromEntries(facts.map(fact=>[fact.id,fact]));
+    const safe=facts.filter(fact=>fact.fitsPayday).map(fact=>fact.id);
+    const known=safe.filter(id=>byId[id].spendThisCycle!=null);
+    const lowest=known.length?Math.min(...known.map(id=>byId[id].spendThisCycle)):null;
+    const allowed=lowest==null?safe:safe.filter(id=>byId[id].spendThisCycle!=null&&byId[id].spendThisCycle<=lowest+SPEND_TIE_PESOS);
+    const rank=id=>[byId[id].spendThisCycle??0,-byId[id].daysToDue];
+    const winner=allowed.length?allowed.reduce((best,id)=>{
+      const [a,b]=[rank(id),rank(best)];
+      return a[0]<b[0]||(a[0]===b[0]&&a[1]<b[1])?id:best;
+    }):null;
+    return {date:key,winner,allowed,lowestSpend:lowest,spendTie:SPEND_TIE_PESOS,facts,details:evaluation.details};
   }
   return {defaultSalary,logoLibrary,builtInDefaults,cardsFromState,evaluate,daily,parseDate,dateKey,calcCustomCard,salaryDatesBetween,clampSalaryDay};
 })();
