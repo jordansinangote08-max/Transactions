@@ -595,9 +595,11 @@ function handleWebhook(e) {
   }
   const note = cleanCard(firstValue(body.note)).slice(0, 120);
   const last4 = String(firstValue(body.last4)).replace(/\D/g, "");
+  // Apple Wallet puts the card's name in the notification title (the Shortcut's App).
+  const title = String(firstValue(body.app) || firstValue(body.title) || "").replace(/\s+/g, " ").trim().slice(0, 200);
 
   // 1. Only cards saved in the web app. Nothing to log otherwise, so no AI call.
-  const card = findSavedCard(readCards(), last4.length === 4 ? last4 : "", raw);
+  const card = findSavedCard(readCards(), last4.length === 4 ? last4 : "", raw, title);
   if (!card) {
     return jsonResponse({ ok: true, code: 200, status: "ignored", reason: "No saved card in the notification." });
   }
@@ -792,7 +794,7 @@ function cardLast4s(card) {
 function matchedLast4(card, sent, raw) {
   const endings = cardLast4s(card);
   if (sent && endings.indexOf(sent) !== -1) return sent;
-  return endings.filter(function (digits) { return hasLast4(raw, digits); })[0] || endings[0] || "";
+  return explicitLast4s(raw).filter(function (digits) { return endings.indexOf(digits) !== -1; })[0] || endings[0] || "";
 }
 
 function readCards() {
@@ -811,44 +813,67 @@ function readCards() {
 }
 
 /**
- * The saved card a notification is about, or null:
+ * The saved card a notification is about, or null, in priority order:
  *
- *   1. last 4  the phone's last 4, or a saved card's last 4 standing on its own
- *              in the text ("Visa 4069", "ending in 4069"; not "4,069.00");
- *   2. name    a saved card's FULL name, compared without case, spaces or
- *              punctuation — "MariBank Credit Card" matches "Mari Bank credit
- *              card" but not "MariBank". The longest name wins, so "BPI Gold"
- *              beats "BPI". A name match is refused when the phone sent a
- *              different last 4: that is another card from the same bank.
+ *   1. last 4  every four digits explicitly tied to a card number — the phone's
+ *              last4, plus any "ending in 1234", "card ****1234", "Visa 1234",
+ *              "xxxx-1234" in the notification or its title — checked against
+ *              ALL the endings saved for each card. They must all belong to one
+ *              saved card. An unsaved ending, or endings of two different cards,
+ *              is refused: it is another card, so the name is never tried.
+ *              Other numbers ("Ref 4069", "PHP 4,069.00") never count.
+ *   2. name    only when no card digits were found at all: a saved card's FULL
+ *              name in the notification or its title (Apple Wallet puts the card
+ *              name there), compared without case, spaces or punctuation —
+ *              "MariCard Credit" matches "Mari Card credit" but not "MariCard".
+ *              The longest name wins ("BPI Gold" over "BPI"); equal-length
+ *              matches are refused as ambiguous.
  */
-function findSavedCard(cards, last4, raw) {
-  // An explicit ending is authoritative. Never fall back to another number in
-  // the text or to a bank name when it belongs to an unsaved card.
-  const byLast4 = cards.filter(function (card) {
-    return cardLast4s(card).some(function (digits) {
-      return last4 ? digits === last4 : hasLast4(raw, digits);
-    });
+function findSavedCard(cards, last4, raw, title) {
+  const text = String(raw || "") + " " + String(title || "");
+  const digits = (last4 ? [last4] : []).concat(explicitLast4s(text)).filter(function (value, i, all) {
+    return all.indexOf(value) === i;
   });
-  if (byLast4.length) return byLast4.length === 1 ? byLast4[0] : null;
-  if (last4) return null;
 
-  const text = compactName(raw);
-  if (!text) return null;
+  if (digits.length) {
+    let match = null;
+    for (var i = 0; i < digits.length; i++) {
+      const owners = cards.filter(function (card) { return cardLast4s(card).indexOf(digits[i]) !== -1; });
+      if (owners.length !== 1 || (match && match.id !== owners[0].id)) return null;
+      match = owners[0];
+    }
+    return match;
+  }
+
+  const compact = compactName(text);
+  if (!compact) return null;
   const byName = cards.filter(function (card) {
     const name = compactName(card.name);
-    return name.length >= 3 && text.indexOf(name) !== -1;
+    return name.length >= 3 && compact.indexOf(name) !== -1;
   }).sort(function (a, b) { return compactName(b.name).length - compactName(a.name).length; });
   if (byName.length > 1 && compactName(byName[0].name).length === compactName(byName[1].name).length) return null;
   return byName[0] || null;
 }
 
-function compactName(value) {
-  return String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+/**
+ * Four digits the text ties to a card number: "ending in 1234", "ends with 1234",
+ * "card 1234", "card no. 1234", "card number: 1234", "Visa 1234", "Mastercard 1234",
+ * "MC/Amex/JCB 1234", "****1234", "xxxx-1234", "••1234". Never amounts or refs.
+ */
+const CARD_DIGITS = /(?:\bending(?:\s+in)?|\bends?\s+(?:in|with)|\bcard(?:\s*(?:no\.?|number|num|#))?|\bvisa|\bmaster\s*card|\bmc|\bamex|\bjcb|[*xX•·]{2,})\s*[:#-]?\s*[*xX•·-]*\s*(\d{4})(?![\d]|[.,]\d)/gi;
+
+function explicitLast4s(text) {
+  const found = [];
+  const pattern = new RegExp(CARD_DIGITS.source, "gi");
+  let m;
+  while ((m = pattern.exec(String(text || ""))) !== null) {
+    if (found.indexOf(m[1]) === -1) found.push(m[1]);
+  }
+  return found;
 }
 
-/** The four digits as a number of their own, not part of a longer number or an amount. */
-function hasLast4(text, digits) {
-  return new RegExp("(^|[^\\d.,])" + digits + "(?!\\d|[.,]\\d)").test(String(text || ""));
+function compactName(value) {
+  return String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
 /** First amount after PHP / Php / ₱ / P in the text, or NaN. */

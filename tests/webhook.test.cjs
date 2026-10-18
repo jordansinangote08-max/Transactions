@@ -162,6 +162,50 @@ test('matches aliases and explicit endings, never amounts or ambiguous cards', (
   assert.equal(ctx.findSavedCard([...cards, { id: 'other', last4: '0123', name: 'Other' }], '0123', ''), null);
 });
 
+test('priority 1: explicit card digits against every saved ending; other numbers never count', () => {
+  const { ctx } = setup();
+  const cards = [
+    { id: 'UB', name: 'UnionBank', last4: '6023', last4s: ['6023', '9624'] },
+    { id: 'MARI', name: 'MariCard Credit', last4: '2475', last4s: ['2475'] },
+    { id: 'RCBC', name: 'RCBC Flex', last4: '4069', last4s: ['4069'] }
+  ];
+  const find = (raw, last4 = '', title = '') => { const card = ctx.findSavedCard(cards, last4, raw, title); return card && card.id; };
+  for (const raw of [
+    'Your card ending in 9624 was charged PHP 120.00',
+    'UnionBank card ****9624: PHP 120.00 at Jollibee',
+    'Card no. 9624 purchase PHP 120',
+    'Visa 9624 has been charged P 71.00',
+    'Mastercard xxxx-9624 used for PHP 99',
+    'Card number ending 6023 charged PHP 5'
+  ]) assert.equal(find(raw), 'UB', raw);
+  assert.equal(find('PHP 120 at Shop', '9624'), 'UB');
+  assert.equal(find('Ref 4069: PHP 120 at Shop'), null);                // not tied to a card number
+  assert.equal(find('Purchase PHP 4,069.00 at Shop'), null);            // an amount
+  assert.equal(find('Card ending 1111 PHP 10. RCBC Flex'), null);       // unsaved card: no name fallback
+  assert.equal(find('Card ending 2475 PHP 10', '9624'), null);          // two different saved cards
+  assert.equal(find('Card ending 9624 PHP 10', '9624'), 'UB');
+});
+
+test('priority 2: exact full card name only when no card digits, including the Wallet title', () => {
+  const { ctx } = setup();
+  const cards = [
+    { id: 'MARI', name: 'MariCard Credit', last4: '2475', last4s: ['2475'] },
+    { id: 'BPI', name: 'BPI', last4: '1000', last4s: ['1000'] },
+    { id: 'BPIG', name: 'BPI Gold', last4: '2000', last4s: ['2000'] }
+  ];
+  const find = (raw, title = '') => { const card = ctx.findSavedCard(cards, '', raw, title); return card && card.id; };
+  assert.equal(find('A Mari Card credit transaction of PHP 69.00 at TikTok was completed.'), 'MARI');
+  assert.equal(find('PHP 69.00 at TikTok Shop', 'MariCard Credit'), 'MARI');   // Apple Wallet
+  assert.equal(find('A MariCard transaction of PHP 69.00'), null);              // not the same name
+  assert.equal(find('BPI Gold purchase PHP 10'), 'BPIG');
+});
+
+test('the webhook passes the Wallet title to card matching', () => {
+  const app = setup();
+  const result = app.post({ raw: 'PHP 10.00 at Shop. Purchase completed.', amount: '10', last4: '', note: 'Shop', app: 'EastWest' });
+  assert.equal(result.card, app.ctx.readCards().find(card => card.name === 'EastWest').name);
+});
+
 test('sync round-trips multiple endings and alias removal; one Cards row per card', () => {
   const app = setup();
   const sync = endings => app.ctx.syncCards({ payload: JSON.stringify([{ id: 'EW', name: 'EastWest', bank: 'EastWest', last4: '3002', last4s: endings }]) });
