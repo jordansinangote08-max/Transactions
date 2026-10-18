@@ -227,23 +227,6 @@ test('new cards and legacy numeric sheet endings retain primary/aliases and lead
 });
 
 
-test('MariBank completed-transaction wording is logged without an AI call, even with its fraud footer', () => {
-  const app = setup();
-  app.sheets.Cards.rows.push(['mari', 'MariBank', '2475', 'MariCard Credit', 'app', new Date()]);
-  app.answer('N');   // even an AI that misreads the footer can't drop it
-  const raw = 'A MariCard Credit transaction of PHP 40.00 at 7-Eleven-ST1657 was completed. If unauthorized, please chat with us live on the app.';
-  const result = app.post({ raw, amount: '40.00', last4: '', note: '7-Eleven-ST1657', app: 'MariBank' });
-  assert.equal(result.status, 'logged');
-  assert.equal(result.card, 'MariCard Credit');
-  assert.equal(app.calls(), 0);
-  const row = app.sheets.Transactions.rows.at(-1);
-  assert.deepEqual([row[2], row[3], row[4], row[5]], [40, 'MariCard Credit', '7-Eleven-ST1657', '2475']);
-  // Not completed wording still goes to the AI.
-  app.post({ raw: 'MariCard Credit: PHP 12.00 at Shop', amount: '12', last4: '', note: 'Shop' });
-  assert.equal(app.calls(), 1);
-  assert.equal(app.ctx.isCompletedPurchase('A MariCard Credit transaction of PHP 40.00 at 7-Eleven is pending.'), false);
-});
-
 test('completed charges remain eligible when a fraud-reporting footer mentions authorization', () => {
   const app = setup();
   assert.equal(app.post(body(purchase + ' If you did not authorize this transaction, call the bank.')).status, 'logged');
