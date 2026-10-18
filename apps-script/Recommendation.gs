@@ -225,59 +225,145 @@ function builtInDefaults(){
     const name=value=>String(value||"").trim().toLowerCase();
     return !!name(card.name)&&name(card.name)===name(transaction.card);
   }
-  // Spends this close to the lowest one count as a tie, left to the other factors.
-  const SPEND_TIE_PESOS=500;
-  // Facts for the daily AI pick, in priority order:
-  //   1. allowed only if a payday falls before the due date (paid on the 24th →
-  //      due the 25th onwards) and the statement isn't about to close;
-  //   2. with transactions ([{date:"yyyy-mm-dd",card,last4,amount}]), only the
-  //      cards with the lowest spend this billing cycle (within SPEND_TIE_PESOS),
-  //      so every card gets used in turn;
-  //   3. the AI weighs the rest (time to pay, use of the credit limit, statement).
-  // winner = the rules-only pick (lowest spend, then longest time to pay), used
-  // whenever the AI is unavailable.
-  function daily(cards,salary,key,transactions) {
+  const UTILIZATION_LIMIT=20;
+  const MONTHS=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  function shortDate(date){ return `${MONTHS[date.getUTCMonth()]} ${date.getUTCDate()}`; }
+  function peso(value){
+    const fixed=(Math.round(Number(value)*100)/100).toFixed(2).replace(/\.00$/,"");
+    const [whole,cents]=fixed.split(".");
+    return "₱"+whole.replace(/\B(?=(\d{3})+(?!\d))/g,",")+(cents?"."+cents:"");
+  }
+  function addDays(date,days){ const d=new Date(date); d.setUTCDate(d.getUTCDate()+days); return d; }
+  function centsOf(rows){ return Math.round(rows.reduce((sum,row)=>sum+(Number(row.amount)||0),0)*100); }
+  function rowsBetween(card,transactions,after,through){
+    return transactions.filter(transaction=>{
+      const day=String(transaction.date||"");
+      return (!after||day>dateKey(after))&&day<=dateKey(through)&&isCardTransaction(card,transaction);
+    });
+  }
+  /*
+   * Today's Recommended Card, in strict priority order. A lower step only breaks
+   * a tie left by the steps above it; it never overrides them.
+   *   Step 1  due date after the upcoming salary date (and the statement is not
+   *           about to close). A card already at or over the 20% utilization
+   *           limit is set aside while a qualifying card under it remains.
+   *   Step 2  lowest spend in the card's own current billing cycle (₱0 first).
+   *   Step 3  latest payment due date.
+   *   Step 4  lowest credit utilization (outstanding ÷ credit limit).
+   *   Final   the card that has gone longest without being recommended, then
+   *           the card listed first.
+   * No card qualifies → the closest alternative (latest due date), flagged.
+   * transactions: [{date:"yyyy-mm-dd",card,last4,amount}], or undefined when
+   * unknown (Steps 2 and 4 then can't use spend). options.lastRecommended:
+   * {cardId:"yyyy-mm-dd"}, the last day before today each card was picked.
+   * Outstanding = this cycle's spend plus the last statement's, while that
+   * statement's due date hasn't passed (payments aren't in the sheet).
+   */
+  function daily(cards,salary,key,transactions,options) {
     const settings={...defaultSalary,...salary};
     const evaluation=evaluate(cards,settings,key);
     const today=parseDate(key);
-    const facts=cards.map(card=>{
+    const known=Array.isArray(transactions);
+    const lastRecommended=(options&&options.lastRecommended)||{};
+    const nextPayday=salaryDatesBetween(addDays(today,-1),addDays(today,400),settings)[0]||null;
+    const facts=cards.map((card,order)=>{
       const item=evaluation.details[card.id];
-      const payday=item.salaryDates[item.salaryDates.length-1]||null;
       const cycleStart=previousStatement(card,today,item.statement);
-      const rows=Array.isArray(transactions)
-        ? transactions.filter(transaction=>{
-            const day=String(transaction.date||"");
-            return (!cycleStart||day>dateKey(cycleStart))&&day<=dateKey(item.statement)&&isCardTransaction(card,transaction);
-          })
-        : null;
-      const spend=rows?Math.round(rows.reduce((sum,row)=>sum+(Number(row.amount)||0),0)*100)/100:null;
+      let spendCents=null,outstandingCents=null;
+      if(known){
+        spendCents=centsOf(rowsBetween(card,transactions,cycleStart,today));
+        outstandingCents=spendCents;
+        if(cycleStart){
+          const lastDue=calcCustomCard(card,cycleStart).due;
+          if(lastDue>=today) outstandingCents+=centsOf(rowsBetween(card,transactions,previousStatement(card,cycleStart,cycleStart),cycleStart));
+        }
+      }
       const limit=Number(card.creditLimit)>0?Number(card.creditLimit):null;
       return {
-        id:card.id,name:String(card.name||card.id),
-        statement:dateKey(item.statement),due:dateKey(item.due),
+        id:card.id,name:String(card.name||card.id),order,
+        statement:dateKey(item.statement),due:dateKey(item.due),dueDate:item.due,
         daysToStatement:item.daysToStatement,daysToDue:item.days,nearStatement:item.nearStatement,
-        payday:payday?dateKey(payday):null,
-        daysFromPaydayToDue:payday?daysUntil(item.due,payday):null,
-        fitsPayday:!!payday&&!item.nearStatement,
-        cycleStart:cycleStart?dateKey(new Date(cycleStart.getTime()+86400000)):null,
-        transactionsThisCycle:rows?rows.length:null,
-        spendThisCycle:spend,
+        dueAfterPayday:!!nextPayday&&item.due>nextPayday,
+        cycleStart:cycleStart?dateKey(addDays(cycleStart,1)):null,cycleStartDate:cycleStart?addDays(cycleStart,1):null,statementDate:item.statement,
+        spendCents,spendThisCycle:spendCents==null?null:spendCents/100,
+        outstanding:outstandingCents==null?null:outstandingCents/100,
         creditLimit:limit,
-        limitUsedPercent:spend!=null&&limit?Math.round(spend/limit*1000)/10:null
+        utilization:outstandingCents!=null&&limit?Math.round(outstandingCents/limit*10)/10:null,
+        lastRecommended:lastRecommended[card.id]||null
       };
     });
     const byId=Object.fromEntries(facts.map(fact=>[fact.id,fact]));
-    const safe=facts.filter(fact=>fact.fitsPayday).map(fact=>fact.id);
-    const known=safe.filter(id=>byId[id].spendThisCycle!=null);
-    const lowest=known.length?Math.min(...known.map(id=>byId[id].spendThisCycle)):null;
-    const allowed=lowest==null?safe:safe.filter(id=>byId[id].spendThisCycle!=null&&byId[id].spendThisCycle<=lowest+SPEND_TIE_PESOS);
-    const rank=id=>[byId[id].spendThisCycle??0,-byId[id].daysToDue];
-    const winner=allowed.length?allowed.reduce((best,id)=>{
-      const [a,b]=[rank(id),rank(best)];
-      return a[0]<b[0]||(a[0]===b[0]&&a[1]<b[1])?id:best;
-    }):null;
-    return {date:key,winner,allowed,lowestSpend:lowest,spendTie:SPEND_TIE_PESOS,facts,details:evaluation.details};
+    const steps=[];
+    const narrow=(ids,keep,step)=>{
+      const kept=ids.filter(keep);
+      steps.push({step,before:ids,after:kept});
+      return kept;
+    };
+
+    let remaining=facts.filter(fact=>fact.dueAfterPayday&&!fact.nearStatement).map(fact=>fact.id);
+    steps.push({step:1,before:facts.map(fact=>fact.id),after:remaining});
+    let status="qualified";
+    if(!remaining.length){
+      // Closest alternative: the latest due date, preferring cards not about to close.
+      const pool=facts.filter(fact=>!fact.nearStatement).length?facts.filter(fact=>!fact.nearStatement):facts;
+      const alternative=pool.reduce((best,fact)=>!best||fact.dueDate>best.dueDate?fact:best,null);
+      status=alternative?"alternative":"none";
+      remaining=alternative?[alternative.id]:[];
+    }else{
+      if(remaining.some(id=>byId[id].utilization!=null&&byId[id].utilization<UTILIZATION_LIMIT))
+        remaining=narrow(remaining,id=>byId[id].utilization==null||byId[id].utilization<UTILIZATION_LIMIT,"limit");
+      if(remaining.length>1&&known){
+        const lowest=Math.min(...remaining.map(id=>byId[id].spendCents));
+        remaining=narrow(remaining,id=>byId[id].spendCents===lowest,2);
+      }
+      if(remaining.length>1){
+        const latest=Math.max(...remaining.map(id=>byId[id].dueDate.getTime()));
+        remaining=narrow(remaining,id=>byId[id].dueDate.getTime()===latest,3);
+      }
+      if(remaining.length>1&&remaining.some(id=>byId[id].utilization!=null)){
+        const lowest=Math.min(...remaining.map(id=>byId[id].utilization??Infinity));
+        remaining=narrow(remaining,id=>(byId[id].utilization??Infinity)===lowest,4);
+      }
+      if(remaining.length>1){
+        const oldest=remaining.reduce((best,id)=>(byId[id].lastRecommended||"")<(byId[best].lastRecommended||"")?id:best);
+        remaining=narrow(remaining,id=>id===oldest,"final");
+      }
+    }
+    const winner=remaining[0]||null;
+    return {
+      date:key,winner,status,nextPayday:nextPayday?dateKey(nextPayday):null,steps,
+      reasons:winner?explain(byId[winner],status,steps,nextPayday,known):[],
+      facts:facts.map(({dueDate,cycleStartDate,statementDate,spendCents,order,...fact})=>fact),
+      details:evaluation.details
+    };
   }
-  return {defaultSalary,logoLibrary,builtInDefaults,cardsFromState,evaluate,daily,parseDate,dateKey,calcCustomCard,salaryDatesBetween,clampSalaryDay};
+  function explain(fact,status,steps,nextPayday,known){
+    const used=step=>steps.some(item=>item.step===step&&item.before.length>1);
+    const payday=nextPayday?shortDate(nextPayday):"your next payday";
+    const reasons=[];
+    if(status==="alternative"){
+      reasons.push(`⚠️ No card's due date is after your ${payday} payday.`);
+      reasons.push(`Closest alternative: due ${shortDate(fact.dueDate)}, the latest due date.`);
+    }else{
+      reasons.push(`✅ Due ${shortDate(fact.dueDate)}, after your ${payday} payday.`);
+      if(known){
+        const cycle=fact.cycleStartDate?`${shortDate(fact.cycleStartDate)}–${shortDate(fact.statementDate)}`:"this cycle";
+        reasons.push(fact.spendCents===0
+          ? `✅ No transactions yet this billing cycle (${cycle}).`
+          : `✅ ${used(2)?"Lowest":"Only"} spend this billing cycle: ${peso(fact.spendCents/100)} (${cycle}).`);
+      }
+      if(used(3)) reasons.push("✅ Latest payment due date among the tied cards.");
+      if(used("final")) reasons.push("✅ Tied on every rule; it has gone longest without being recommended.");
+    }
+    if(fact.utilization!=null){
+      reasons.push(fact.utilization<UTILIZATION_LIMIT
+        ? `✅ Credit utilization ${fact.utilization}%, below your ${UTILIZATION_LIMIT}% limit${used(4)?" and the lowest":""}.`
+        : `⚠️ Credit utilization ${fact.utilization}%, at or above your ${UTILIZATION_LIMIT}% limit.`);
+    }else if(fact.creditLimit==null){
+      reasons.push("Add a credit limit to this card to track utilization.");
+    }
+    return reasons;
+  }
+  return {defaultSalary,logoLibrary,builtInDefaults,cardsFromState,evaluate,daily,shortDate,UTILIZATION_LIMIT,parseDate,dateKey,calcCustomCard,salaryDatesBetween,clampSalaryDay};
 })();
 if(typeof module!=="undefined"&&module.exports) module.exports=CardAdvisorRecommendation;
