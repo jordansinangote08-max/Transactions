@@ -630,7 +630,8 @@ function handleWebhook(e) {
     }
 
     // 4. Is it money going out? Refunds, cash in, cashback, promos and notices are not.
-    const charge = isChargeByAI(raw);
+    //    A bank's standard completed-purchase wording needs no AI call.
+    const charge = isCompletedPurchase(raw) || isChargeByAI(raw);
     if (charge === null) {
       return jsonResponse({ ok: false, code: 503, status: "unverified", error: "Could not reach the AI to verify the charge; nothing was saved." });
     }
@@ -910,7 +911,19 @@ const AI_INSTRUCTION =
   "fund transfers (even outgoing), ads/promos/rewards, account notices, or ambiguous/incomplete text. " +
   "An amount or merchant alone is not proof of a charge. 'Confirm your PHP 10 purchase. Tap Yes' = N. " +
   "'Did you make a PHP 10 transaction?' = N. 'Your card was charged PHP 10 at Shop. Purchase completed.' = Y. " +
-  "A completed-purchase confirmation is Y; a request for confirmation before payment is N.";
+  "A completed-purchase confirmation is Y; a request for confirmation before payment is N. " +
+  "A fraud-reporting footer after a completed purchase does not change it: " +
+  "'A MariCard Credit transaction of PHP 40.00 at 7-Eleven was completed. If unauthorized, please chat with us live on the app.' = Y.";
+
+/**
+ * Unambiguous completed-purchase wording, e.g. MariBank's
+ * "A MariCard Credit transaction of PHP 40.00 at 7-Eleven-ST1657 was completed."
+ * Only reached after notificationRejection, so approvals, pending, declined,
+ * refunds and transfers never get here. Anything else goes to the AI.
+ */
+function isCompletedPurchase(raw) {
+  return /\b(?:transaction|purchase)\s+of\s+(?:PHP|Php|php|₱|P)\s?\d[\d,]*(?:\.\d{1,2})?\s+at\s+\S.{0,100}?\s+(?:was|has been)\s+(?:completed|successful|successfully completed)\b/i.test(String(raw || ""));
+}
 
 /** true = a charge, false = not a charge, null = no usable answer. */
 function isChargeByAI(raw) {
