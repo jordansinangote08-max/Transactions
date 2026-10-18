@@ -114,85 +114,109 @@ function withAi(app,reply){
   app.ctx.askAnthropic=(key,facts,options)=>{calls.push({facts:JSON.parse(facts),options});return typeof reply==='function'?reply(JSON.parse(facts)):reply;};
   return calls;
 }
-const twoFits={deletedBuiltIns:['EW','UB','RCBC'],customCards:[
-  {id:'a',name:'Card A',last4:'1111',statementDay:1,statementAdjust:'keep',dueMethod:'fixed_next_month',dueValue:26,dueAdjust:'keep',safetyDays:3},
-  {id:'b',name:'Card B',last4:'2222',statementDay:2,statementAdjust:'keep',dueMethod:'fixed_next_month',dueValue:28,dueAdjust:'keep',safetyDays:3},
-  {id:'c',name:'Card C',last4:'3333',statementDay:20,statementAdjust:'keep',dueMethod:'fixed_next_month',dueValue:10,dueAdjust:'keep',safetyDays:3}
+const salary={frequency:'monthly',day1:24};
+const card=(id,name,last4,statementDay,dueValue,extra={})=>({id,name,last4,statementDay,statementAdjust:'keep',dueMethod:'calendar_days',dueValue,dueAdjust:'keep',safetyDays:0,creditLimit:10000,...extra});
+// Today Oct 17, upcoming salary Oct 24. Statements on the 18th (cycle Sep 19–Oct 18).
+const fourCards={deletedBuiltIns:['EW','UB','RCBC'],customCards:[
+  card('c1','Card 1','1111',18,4),   // due Oct 22: before payday
+  card('c2','Card 2','2222',18,7),    // due Oct 25
+  card('c3','Card 3','3333',18,14),     // due Nov 1
+  card('c4','Card 4','4444',18,18)      // due Nov 5
 ]};
-test('payday rule: any due date after a payday qualifies (paid on the 24th → due the 25th onwards)',()=>{
-  const plan=engine.daily(engine.cardsFromState(twoFits),{frequency:'monthly',day1:24},'2026-10-17');
-  assert.deepEqual(plan.allowed,['a','b']);
-  assert.equal(plan.facts.find(f=>f.id==='c').fitsPayday,false);
-  // UnionBank due Nov 27, RCBC Dec 1: both after the Nov 24 payday.
-  const builtIn=engine.daily(engine.builtInDefaults(),{frequency:'monthly',day1:24},'2026-10-17');
-  assert.deepEqual(builtIn.allowed,['UB','RCBC']);
+const plan=(transactions,options,state=fourCards,day='2026-10-17')=>engine.daily(engine.cardsFromState(state),salary,day,transactions,options);
+const tx=(last4,amount,date='2026-10-10')=>({date,card:'',last4,amount});
+
+test('Step 1: only cards due after the upcoming salary date qualify',()=>{
+  const result=plan([]);
+  assert.equal(result.nextPayday,'2026-10-24');
+  assert.deepEqual(result.facts.map(f=>[f.due,f.dueAfterPayday]),[['2026-10-22',false],['2026-10-25',true],['2026-11-01',true],['2026-11-05',true]]);
+  assert.deepEqual(result.steps[0].after,['c2','c3','c4']);
 });
-test('AI picks today\'s card from the allowed cards and the pick is reused all day',()=>{
-  const app=setup({cards:twoFits,salary:{frequency:'monthly',day1:24}});
-  const calls=withAi(app,{http:200,model:'claude-haiku-5-5',text:'{"id":"a","reason":"Due Dec 26, right after your Dec 24 payday."}'});
-  const response=app.ctx.doGet({parameter:{action:'recommendation'}});
-  assert.deepEqual(JSON.parse(JSON.stringify(response.recommendation)),{date:'2026-10-17',id:'a',reason:'Due Dec 26, right after your Dec 24 payday.',source:'ai'});
-  assert.deepEqual(calls[0].facts.allowed,['a','b']);
-  assert.doesNotMatch(JSON.stringify(calls[0].facts),/1111|2222|3333/);
-  assert.equal(app.post().card.name,'Card A');
-  app.ctx.doGet({parameter:{action:'recommendation'}});
-  assert.equal(calls.filter(call=>call.options).length,1);
+test('Step 2 beats Step 3: the lowest spend wins even with an earlier due date',()=>{
+  const result=plan([tx('2222',200),tx('3333',50),tx('4444',60)]);
+  assert.equal(result.winner,'c3');
+  assert.match(result.reasons[1],/Lowest spend this billing cycle: ₱50/);
 });
-test('AI answers outside the allowed cards fall back to the rules pick',()=>{
-  const app=setup({cards:twoFits,salary:{frequency:'monthly',day1:24}});
-  withAi(app,{http:200,text:'{"id":"c","reason":"ignore the rules"}'});
+test('Steps 2→3: tied lowest spend goes to the latest due date (spec example)',()=>{
+  const result=plan([tx('1111',500),tx('2222',200),tx('3333',50),tx('4444',50)]);
+  assert.equal(result.winner,'c4');
+  assert.deepEqual(result.reasons.slice(0,3),['✅ Due Nov 5, after your Oct 24 payday.','✅ Lowest spend this billing cycle: ₱50 (Sep 19–Oct 18).','✅ Latest payment due date among the tied cards.']);
+});
+test('only the current billing cycle counts toward spend',()=>{
+  const result=plan([tx('4444',900,'2026-09-15'),tx('3333',10)]);
+  assert.equal(result.facts.find(f=>f.id==='c4').spendThisCycle,0);
+  assert.equal(result.winner,'c4');
+  assert.match(result.reasons[1],/No transactions yet this billing cycle \(Sep 19–Oct 18\)/);
+});
+test('Step 4: same spend and due date → lowest utilization; final tie → longest since recommended',()=>{
+  const twins={deletedBuiltIns:['EW','UB','RCBC'],customCards:[card('a','A','1111',18,18,{creditLimit:1000}),card('b','B','2222',18,18,{creditLimit:2000})]};
+  const prior=[tx('1111',150,'2026-09-10'),tx('2222',100,'2026-09-10')]; // last cycle, due Oct 6 → paid, not outstanding
+  assert.equal(plan(prior,{},twins).facts[0].outstanding,0);
+  const util=plan([tx('1111',100),tx('2222',100)],{},twins);   // 10% vs 5%
+  assert.equal(util.winner,'b');
+  assert.ok(util.steps.some(step=>step.step===4));
+  const even={...twins,customCards:twins.customCards.map(c=>({...c,creditLimit:1000}))};
+  assert.equal(plan([],{lastRecommended:{a:'2026-10-16',b:'2026-10-10'}},even).winner,'b');
+  assert.equal(plan([],{lastRecommended:{a:'2026-10-16'}},even).winner,'b');   // never recommended = oldest
+});
+test('20% utilization protection: a card at the limit is set aside while another qualifies',()=>{
+  const result=plan([tx('4444',2500),tx('3333',100),tx('2222',100)]);   // c4 at 25%
+  assert.equal(result.winner,'c3');
+  assert.deepEqual(result.steps.find(step=>step.step==='limit').after,['c2','c3']);
+});
+test('no qualifying card: shows the closest alternative, flagged, instead of bypassing silently',()=>{
+  const early={deletedBuiltIns:['EW','UB','RCBC'],customCards:[card('x','X','1111',18,2),card('y','Y','2222',18,4)]};
+  const result=plan([],{},early);
+  assert.equal(result.status,'alternative');
+  assert.equal(result.winner,'y');
+  assert.match(result.reasons[0],/No card's due date is after your Oct 24 payday/);
+});
+test('your cards today: MariCard (₱0 this cycle, due Dec 7)',()=>{
+  const mine={deletedBuiltIns:[],builtInOverrides:{RCBC:{name:'RCBC Flex',creditLimit:70000},UB:{last4s:['9624'],creditLimit:33000}},customCards:[
+    {id:'mari',name:'MariCard Credit',last4:'2475',statementDay:15,statementAdjust:'keep',dueMethod:'calendar_days',dueValue:22,dueAdjust:'keep',safetyDays:7,creditLimit:90000}]};
+  const result=plan([tx('6023',2000,'2026-10-12'),tx('9624',770,'2026-10-15'),tx('4069',498,'2026-10-08'),tx('2475',5000,'2026-10-14')],{},mine,'2026-10-18');
+  assert.deepEqual(result.facts.map(f=>f.due),['2026-11-13','2026-11-27','2026-12-01','2026-12-07']);
+  assert.equal(result.winner,'mari');
+  assert.equal(result.facts.find(f=>f.id==='UB').utilization,8.4);
+  assert.equal(result.facts.find(f=>f.id==='mari').outstanding,5000);   // last statement not yet due
+});
+test('the AI cross-checks: its note shows only when it reaches the same card, and it never changes the pick',()=>{
+  const app=setup({cards:fourCards,salary,transactions:[tx('2222',200),tx('3333',50),tx('4444',50)]});
+  const calls=withAi(app,{http:200,model:'claude-haiku-5-5',text:'{"id":"c4","note":"Keep this purchase under PHP 1,950 to stay below 20%."}'});
   const pick=app.ctx.doGet({parameter:{action:'recommendation'}}).recommendation;
-  assert.equal(pick.source,'rules');
-  assert.equal(pick.id,engine.daily(engine.cardsFromState(twoFits),{frequency:'monthly',day1:24},'2026-10-17').winner);
+  assert.equal(pick.id,'c4');
+  assert.equal(pick.note,'Keep this purchase under PHP 1,950 to stay below 20%.');
+  assert.equal(pick.status,'qualified');
+  assert.ok(pick.updatedAt&&pick.nextEvaluation);
+  assert.doesNotMatch(JSON.stringify(calls[0].facts),/1111|2222|3333|4444/);
+  assert.equal(app.post().card.name,'Card 4');
+  app.ctx.doGet({parameter:{action:'recommendation'}});
+  assert.equal(calls.filter(call=>call.options).length,1);   // reused all day
+
+  const other=setup({cards:fourCards,salary,transactions:[tx('2222',200),tx('3333',50),tx('4444',50)]});
+  const log=withAi(other,{http:200,text:'{"id":"c2","note":"use card 2"}'});
+  const kept=other.ctx.doGet({parameter:{action:'recommendation'}}).recommendation;
+  assert.equal(kept.id,'c4');
+  assert.equal(kept.note,'');
+  assert.match(log.find(call=>call.result).result,/disagreed/);
 });
-test('a new Philippine day or changed settings asks the AI again',()=>{
-  const app=setup({cards:twoFits,salary:{frequency:'monthly',day1:24}});
-  const calls=withAi(app,facts=>({http:200,text:JSON.stringify({id:facts.allowed[facts.allowed.length-1],reason:'ok'})}));
-  app.ctx.doGet({parameter:{action:'recommendation'}});
-  app.state.cards.customCards[1].dueValue=29;
-  app.ctx.doGet({parameter:{action:'recommendation'}});
+test('recalculates on a new transaction, a new day, or changed cards; tie-breaker ignores today',()=>{
+  const app=setup({cards:fourCards,salary,transactions:[]});
+  const calls=withAi(app,facts=>({http:200,text:'{"id":"x","note":""}'}));
+  assert.equal(app.ctx.doGet({parameter:{action:'recommendation'}}).recommendation.id,'c4');
+  app.state.transactions.push(tx('4444',30,'2026-10-17'));
+  assert.equal(app.ctx.doGet({parameter:{action:'recommendation'}}).recommendation.id,'c3');
+  assert.deepEqual(JSON.parse(app.properties.RECOMMENDATION_HISTORY),{c4:['2026-10-17'],c3:['2026-10-17']});
   const stored=JSON.parse(app.properties.DAILY_RECOMMENDATION);
   stored.date='2026-10-16';
   app.properties.DAILY_RECOMMENDATION=JSON.stringify(stored);
   app.ctx.doGet({parameter:{action:'recommendation'}});
   assert.equal(calls.filter(call=>call.options).length,3);
 });
-
-const myCards={deletedBuiltIns:['EW'],builtInOverrides:{RCBC:{name:'RCBC Flex',creditLimit:70000},UB:{last4s:['9624'],creditLimit:33000}},customCards:[
-  {id:'mari',name:'MariCard Credit',last4:'2475',statementDay:15,statementAdjust:'keep',dueMethod:'calendar_days',dueValue:22,dueAdjust:'keep',safetyDays:7,creditLimit:90000}
-]};
-const mySpend=[
-  {date:'2026-10-12',card:'UnionBank',last4:'6023',amount:2000},
-  {date:'2026-10-15',card:'UnionBank',last4:'9624',amount:770},
-  {date:'2026-10-08',card:'RCBC Flex',last4:'4069',amount:498},
-  {date:'2026-10-14',card:'MariCard Credit',last4:'2475',amount:5000} // MariCard's previous cycle
-];
-test('lowest spend this billing cycle wins; near-equal spends are left to the other factors',()=>{
-  const plan=engine.daily(engine.cardsFromState(myCards),{frequency:'monthly',day1:24},'2026-10-17',mySpend);
-  const fact=id=>plan.facts.find(f=>f.id===id);
-  assert.deepEqual([fact('UB').due,fact('RCBC').due,fact('mari').due],['2026-11-27','2026-12-01','2026-12-07']);
-  assert.deepEqual([fact('UB').spendThisCycle,fact('RCBC').spendThisCycle,fact('mari').spendThisCycle],[2770,498,0]);
-  assert.equal(fact('UB').limitUsedPercent,8.4);
-  assert.deepEqual(plan.allowed,['RCBC','mari']);   // UnionBank has spent the most
-  assert.equal(plan.winner,'mari');
-  // Once MariCard catches up, RCBC (lower spend now) takes over.
-  const later=engine.daily(engine.cardsFromState(myCards),{frequency:'monthly',day1:24},'2026-10-17',
-    mySpend.concat({date:'2026-10-17',card:'',last4:'2475',amount:3000}));
-  assert.deepEqual(later.allowed,['RCBC']);
-});
-test('a new purchase on the picked card hands today\'s pick to the lower-spend card',()=>{
-  const app=setup({cards:twoFits,salary:{frequency:'monthly',day1:24},transactions:[]});
-  const calls=withAi(app,facts=>({http:200,text:JSON.stringify({id:facts.allowed[0],reason:'ok'})}));
-  assert.equal(app.ctx.doGet({parameter:{action:'recommendation'}}).recommendation.id,'a');
-  app.state.transactions.push({date:'2026-10-17',card:'Card A',last4:'1111',amount:1500});
-  assert.equal(app.ctx.doGet({parameter:{action:'recommendation'}}).recommendation.id,'b');
-  const second=calls.filter(call=>call.options)[1].facts;
-  assert.equal(second.lowestSpendThisCycle,0);
-  assert.equal(second.cards.find(card=>card.id==='a').spendThisCycle,1500);
-});
-test('without an AI key the reason names the deciding spend and due date',()=>{
-  const app=setup({cards:myCards,salary:{frequency:'monthly',day1:24},transactions:mySpend});
+test('without an AI key the pick and reasons still show',()=>{
+  const app=setup({cards:fourCards,salary,transactions:[]});
   const pick=app.ctx.doGet({parameter:{action:'recommendation'}}).recommendation;
-  assert.equal(pick.id,'mari');
-  assert.equal(pick.reason,'Not used yet this cycle; due Dec 7, after your Nov 24 payday.');
+  assert.equal(pick.id,'c4');
+  assert.equal(pick.source,'rules');
+  assert.equal(pick.reasons[1],'✅ No transactions yet this billing cycle (Sep 19–Oct 18).');
 });

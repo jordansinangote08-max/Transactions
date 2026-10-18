@@ -106,6 +106,9 @@
     .winner{font-size:clamp(1.65rem,3vw,2.35rem);font-weight:700;line-height:1.1;margin-top:var(--space-2)}
     .last{font-size:var(--text-sm);color:var(--muted);font-weight:500;white-space:nowrap}
     .reason{font-size:var(--text-sm);color:var(--muted);margin-top:var(--space-2)}
+    .reason-list{list-style:none;display:grid;gap:2px}
+    .reason-note{margin-top:var(--space-2);color:var(--text)}
+    .reason-meta{margin-top:var(--space-2);font-size:var(--text-xs)}
     .days{text-align:right;white-space:nowrap}
     .days strong{display:block;font-size:clamp(1.8rem,3vw,2.5rem);line-height:1;font-weight:700}
     .days span{font-size:var(--text-xs);color:var(--muted)}
@@ -644,7 +647,7 @@
           <div>
             <div class="recommendation-label">Recommended card</div>
             <div class="winner" id="winner">UnionBank <span class="last">•••• 6023</span></div>
-            <p class="reason" id="reason">A salary date falls inside this card’s safe payment window.</p>
+            <div class="reason" id="reason"></div>
           </div>
           <div class="days">
             <strong id="days">Safe</strong>
@@ -1669,23 +1672,20 @@
       renderLogoSelector(animate);
     }
 
-    // The recommended card is always for today in the Philippines and is picked by
-    // the AI in Apps Script (?action=recommendation), refreshed after 12:00 AM PH
-    // time. Until the AI's pick for today arrives, or if it can't be reached, the
-    // shared engine's own payday-first pick is shown.
+    // The recommended card is always for today in the Philippines: Apps Script
+    // (?action=recommendation) applies the four steps with this cycle's
+    // transactions, the AI cross-checks it and adds a note, refreshed after
+    // 12:00 AM PH time. Until today's pick arrives, or if the sheet can't be
+    // reached, the same engine runs here without transactions.
     function updateRecommendation(){
       const today=getPhilippinesDate();
       recommendationDate=today;
 
       const cards=allCards();
       const plan=CardAdvisorRecommendation.daily(cards,salarySettings,today);
-      const fromAi=!!(aiPick&&aiPick.date===today&&plan.allowed.includes(aiPick.id));
-      const winner=fromAi?aiPick.id:plan.winner;
-      const fact=plan.facts.find(item=>item.id===winner);
-      const reason=fromAi&&aiPick.reason ? aiPick.reason
-        : fact&&fact.payday ? `Due ${fmtLong(fact.due)}, right after your ${fmtLong(fact.payday)} payday.`
-        : fact ? `Due ${fmtLong(fact.due)}; a payday comes before it.`
-        : "";
+      const fromSheet=!!(aiPick&&aiPick.date===today&&Array.isArray(aiPick.reasons)&&cards.some(card=>card.id===aiPick.id));
+      const pick=fromSheet?aiPick:{id:plan.winner,status:plan.status,reasons:plan.reasons,note:""};
+      const winner=pick.id;
       const details=Object.fromEntries(Object.entries(plan.details).map(([id,item])=>[id,{
         ...item,statement:parseDate(CardAdvisorRecommendation.dateKey(item.statement)),
         due:parseDate(CardAdvisorRecommendation.dateKey(item.due))
@@ -1717,17 +1717,30 @@
         document.querySelectorAll('input[name="card"]').forEach(input=>input.checked=input.value===winner);
         const card=details[winner].card;
         el.winner.innerHTML=`${escapeHtml(card.name)} <span class="last">${escapeHtml(cardEndingsLabel(card))}</span>`;
-        el.days.textContent="Safe";
+        el.days.textContent=pick.status==="alternative"?"Caution":"Safe";
         el.due.textContent=`Due: ${fmtDue(details[winner].due)}`;
-        el.reason.textContent=reason;
+        renderRecommendationReasons(pick,fromSheet);
       }else{
         selected="";
         document.querySelectorAll('input[name="card"]').forEach(input=>input.checked=false);
         el.winner.textContent="No safe card";
         el.days.textContent="—";
         el.due.textContent="Review due dates";
-        el.reason.textContent="No card currently meets both the salary and statement-safety rules.";
+        el.reason.textContent="No cards to compare yet. Add a card to get a recommendation.";
       }
+    }
+
+    function manilaTime(iso){
+      return new Date(iso).toLocaleString("en-PH",{timeZone:"Asia/Manila",month:"short",day:"numeric",hour:"numeric",minute:"2-digit"});
+    }
+
+    function renderRecommendationReasons(pick,fromSheet){
+      const items=(pick.reasons||[]).map(text=>`<li>${escapeHtml(text)}</li>`).join("");
+      const note=pick.note?`<p class="reason-note">💡 ${escapeHtml(pick.note)}</p>`:"";
+      const meta=fromSheet&&pick.updatedAt
+        ? `Updated ${escapeHtml(manilaTime(pick.updatedAt))} · Next check 12:00 AM PH time`
+        : "Checking this cycle’s transactions…";
+      el.reason.innerHTML=`<ul class="reason-list">${items}</ul>${note}<p class="reason-meta">${meta}</p>`;
     }
 
     let aiPickTimer=0;
