@@ -52,6 +52,7 @@ All values are strings; any may be empty.
 | `amount` | Commas and `₱` tolerated. Missing or invalid → the first PHP / ₱ / P amount in `raw`. |
 | `last4` | Optional. Anything but exactly 4 digits counts as missing. |
 | `note` | Merchant. Empty → the card's name, like rows entered by hand. |
+| `app` | Optional. The notification's app, or for Apple Wallet its title (the card name). Used only to find the card; `title` is also accepted. |
 
 ### Row written to Transactions
 
@@ -94,15 +95,20 @@ otherwise be written:
 
 Only cards on the Cards tab (the cards saved in the web app) are considered.
 
-1. **Last 4.** The phone's `last4` can match any ending saved for the card. If supplied, it is authoritative: an unsaved ending never falls back to a bank name or another number in the text. Without it, match a saved ending standing on its own
-   in `raw` (`Visa 4069`, `ending in 4069`). Digits inside a number or an amount
-   don't count: `PHP 4,069.00` does not match a card ending 4069.
-2. **Full card name.** Compared without case, spaces or punctuation. A card saved
-   as `MariBank Credit Card` matches `MariBank Credit Card` and
-   `Mari Bank credit card`, but **not** a notification that says only `MariBank`.
-   The longest matching name wins (`BPI Gold` over `BPI`). A name match is refused
-   when the phone sent a last 4 that differs from the saved endings: that is another
-   card from the same bank. Ambiguous endings shared by different saved cards are refused.
+1. **Last 4 (first priority).** Every four digits explicitly tied to a card number
+   count: the phone's `last4`, plus any `ending in 1234`, `ends with 1234`,
+   `card 1234`, `card no. 1234`, `Visa 1234`, `Mastercard 1234`, `****1234`,
+   `xxxx-1234` in `raw` or `app`. Each is checked against **all** endings saved for
+   each card, and they must all belong to one saved card. An unsaved ending, or
+   endings of two different saved cards, is refused (`ignored`): it is another card,
+   so the name is never tried. Other numbers never count: `Ref 4069`,
+   `PHP 4,069.00`.
+2. **Full card name (only when no card digits were found).** Searched in `raw` and
+   `app` (Apple Wallet puts the card name in the notification title), compared
+   without case, spaces or punctuation. A card saved as `MariCard Credit` matches
+   `MariCard Credit` and `Mari Card credit`, but **not** a notification that says
+   only `MariCard`. The longest matching name wins (`BPI Gold` over `BPI`); two
+   equally long matches are refused.
 3. **Nothing matched** → `ignored`. No card is created.
 
 ### AI charge check (Claude Haiku 5.5)
