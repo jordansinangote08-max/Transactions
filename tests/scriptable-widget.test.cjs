@@ -4,14 +4,14 @@ const fs=require('node:fs'),vm=require('node:vm');
 const source=fs.readFileSync(require('node:path').join(__dirname,'../scriptable/recommended-card.js'),'utf8');
 const card={name:'Actual Saved Card',logo:'unionbank.svg',last4:'0042'};
 async function run({family='small',response={ok:true,card},offline=false,cached,configured=true,imageOffline=false}={}){
-  const files=new Map(), requests=[],texts=[],images=[],status=[];
+  const files=new Map(), requests=[],texts=[],images=[];
   const settings={site:'https://example.test/Transactions/',endpoint:'https://script.google.com/macros/s/deployment/exec',token:'secret-test-token-only-'.repeat(3)};
-  if(cached!==undefined)files.set('/library/card-advisor-Recommended_Card/recommendation.json',JSON.stringify({card:cached,at:Date.parse('2026-10-19T01:15:00Z')}));
+  if(cached!==undefined)files.set('/library/card-advisor-Recommended_Card/recommendation.json',JSON.stringify({card:cached}));
   let widget;
   class Stack{
     addStack(){return new Stack();} addSpacer(){} layoutHorizontally(){} layoutVertically(){} centerAlignContent(){} setPadding(){}
     addImage(image){images.push(image);return {applyFittingContentMode(){}};}
-    addText(value){(/^(?:Updated|Offline) · /.test(value)?status:texts).push(value);return {centerAlignText(){}};}
+    addText(value){texts.push(value);return {centerAlignText(){}};}
   }
   class Widget extends Stack{}
   const fileManager={libraryDirectory:()=>'/library',joinPath:(a,b)=>a+'/'+b,fileExists:p=>files.has(p),createDirectory:p=>files.set(p,'directory'),remove:p=>{for(const k of files.keys())if(k.startsWith(p))files.delete(k);},readString:p=>{if(!files.has(p))throw Error();return files.get(p);},writeString:(p,v)=>files.set(p,v),readImage:p=>files.get(p),writeImage:(p,v)=>files.set(p,v)};
@@ -24,7 +24,7 @@ async function run({family='small',response={ok:true,card},offline=false,cached,
   const ctx=vm.createContext({Date,JSON,console,Request,Color,Size:class{constructor(w,h){this.width=w;this.height=h;}},Font:{semiboldSystemFont:()=>'',mediumSystemFont:()=>''},ListWidget:Widget,
     FileManager:{local:()=>fileManager},Keychain:{get:()=>{if(!configured)throw Error();return JSON.stringify(settings);}},Script:{name:()=> 'Recommended Card',setWidget:w=>widget=w,complete(){}},config:{runsInWidget:true,widgetFamily:family}});
   await vm.runInContext('(async()=>{'+source+'})()',ctx);
-  return {files,requests,texts,images,settings,widget,status};
+  return {files,requests,texts,images,settings,widget};
 }
 for(const family of ['small','medium','large'])test(`${family} renders only actual name and masked ending, logo and relevant app link`,async()=>{
   const r=await run({family});
@@ -33,7 +33,6 @@ for(const family of ['small','medium','large'])test(`${family} renders only actu
   assert.equal(r.widget.url,'https://example.test/Transactions/#overview');
   const wait=r.widget.refreshAfterDate.getTime()-Date.now();
   assert.ok(wait>0&&wait<=5*60*1000+1000);
-  assert.match(r.status[0],/^Updated · \d{1,2}:\d{2}\s?[AP]M$/i);
   assert.equal(r.requests[0].method,'POST');
   assert.equal(r.requests[0].url,r.settings.endpoint);
   assert.ok(!r.requests[0].url.includes(r.settings.token));
@@ -44,7 +43,6 @@ for(const family of ['small','medium','large'])test(`${family} renders only actu
 });
 test('temporary offline failure reuses last successful recommendation',async()=>{
   const r=await run({offline:true,cached:card});assert.deepEqual(r.texts,[card.name,'•••• 0042']);
-  assert.deepEqual(r.status,['Offline · 9:15 AM']);
 });
 test('authoritative null removes old recommendation and replaces cache',async()=>{
   const r=await run({response:{ok:true,card:null},cached:card});
