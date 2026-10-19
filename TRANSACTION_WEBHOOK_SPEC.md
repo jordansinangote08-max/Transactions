@@ -93,7 +93,7 @@ otherwise be written:
 
 ### Card resolution
 
-Only cards on the Cards tab (the cards saved in the web app) are considered.
+Only cards on the Cards tab that the web app still has (per its saved cards in the Settings sheet) are considered; leftover rows for old or deleted cards are skipped, so they can't tie with or beat the real card.
 
 1. **Last 4 (first priority).** Every four digits explicitly tied to a card number
    count: the phone's `last4`, plus any `ending in 1234`, `ends with 1234`,
