@@ -206,6 +206,23 @@ test('the webhook passes the Wallet title to card matching', () => {
   assert.equal(result.card, app.ctx.readCards().find(card => card.name === 'EastWest').name);
 });
 
+test('a leftover Cards row with the same name never ties with or beats the real card', () => {
+  const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
+  for (const name of ['Maricard Credit', 'Maricard']) {
+    const app = setup();
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '../apps-script/Recommendation.gs'), 'utf8'), app.ctx);
+    app.sheets.Cards.rows.push(['mari', 'MariBank', '2475', name, 'app', new Date()]);
+    app.sheets.Cards.rows.push(['shortcut-old', 'MariBank', '', 'MariCard Credit', 'shortcut', new Date()]);
+    app.ctx.readState = () => ({ cards: { deletedBuiltIns: [], customCards: [{ id: 'mari', name, last4: '2475', statementDay: 15, dueMethod: 'calendar_days', dueValue: 22 }] } });
+    const raw = 'MariBank A MariCard Credit transaction of PHP 1.00 at GADC KARUHATAN SOK was completed. If unauthorized, please chat with us live on the app.';
+    const result = app.post({ raw, amount: '1.00', last4: '', note: 'GADC KARUHATAN SOK', app: 'MariBank' });
+    // Before: "Maricard Credit" tied with the old row (ignored); "Maricard" lost to it.
+    assert.equal(result.status, 'logged', name);
+    assert.equal(result.card, name);
+    assert.equal(app.sheets.Transactions.rows.at(-1)[3], name);
+  }
+});
+
 test('sync round-trips multiple endings and alias removal; one Cards row per card', () => {
   const app = setup();
   const sync = endings => app.ctx.syncCards({ payload: JSON.stringify([{ id: 'EW', name: 'EastWest', bank: 'EastWest', last4: '3002', last4s: endings }]) });

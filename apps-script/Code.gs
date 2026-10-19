@@ -599,7 +599,7 @@ function handleWebhook(e) {
   const title = String(firstValue(body.app) || firstValue(body.title) || "").replace(/\s+/g, " ").trim().slice(0, 200);
 
   // 1. Only cards saved in the web app. Nothing to log otherwise, so no AI call.
-  const card = findSavedCard(readCards(), last4.length === 4 ? last4 : "", raw, title);
+  const card = findSavedCard(appCards(readCards()), last4.length === 4 ? last4 : "", raw, title);
   if (!card) {
     return jsonResponse({ ok: true, code: 200, status: "ignored", reason: "No saved card in the notification." });
   }
@@ -810,6 +810,18 @@ function readCards() {
         source: String(row[4] || "app")
       };
     });
+}
+
+/**
+ * Only the Cards rows for cards the web app still has. A leftover row (an old
+ * Shortcut-made or since-deleted card) must not tie with, or win over, the real
+ * card. Before the app has saved its cards to the Settings sheet, every row counts.
+ */
+function appCards(rows) {
+  const state = readState(false);
+  if (!state.cards || typeof CardAdvisorRecommendation === "undefined") return rows;
+  const ids = CardAdvisorRecommendation.cardsFromState(state.cards).map(function (card) { return String(card.id); });
+  return rows.filter(function (row) { return ids.indexOf(row.id) !== -1; });
 }
 
 /**
