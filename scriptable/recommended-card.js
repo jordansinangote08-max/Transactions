@@ -40,15 +40,8 @@ function validateCard(card) {
       typeof card.logo !== 'string' || !/^(?:[a-z0-9-]+\.(?:png|svg))?$/.test(card.logo)) throw new Error('Invalid recommendation');
   return {name:card.name, logo:card.logo, last4:card.last4};
 }
-// The card plus when it was fetched and whether this run reached the backend.
-let fetched = {at: null, offline: false};
 function readSnapshot() {
-  try {
-    const saved = JSON.parse(fm.readString(snapshot));
-    const card = validateCard(saved.card);
-    fetched = {at: Number(saved.at) || null, offline: true};
-    return card;
-  } catch (_) { return null; }
+  try { return validateCard(JSON.parse(fm.readString(snapshot)).card); } catch (_) { return null; }
 }
 async function getRecommendation(s) {
   try {
@@ -61,8 +54,7 @@ async function getRecommendation(s) {
     if (data && data.ok === false && data.code === 401) { clearCache(); return null; }
     if (!data || data.ok !== true || (r.response && r.response.statusCode !== 200)) throw new Error('Unavailable');
     const card = validateCard(data.card);
-    fetched = {at: Date.now(), offline: false};
-    fm.writeString(snapshot, JSON.stringify({card, at: fetched.at})); // Explicit null replaces old data.
+    fm.writeString(snapshot, JSON.stringify({card})); // Explicit null replaces old data.
     return card;
   } catch (_) { return readSnapshot(); } // Offline/temporary failure only; never invent data.
 }
@@ -114,16 +106,6 @@ function nextRefresh() {
   const midnight = now - ((now + manila) % day) + day + 60*1000;
   return new Date(Math.min(now + 5*60*1000, midnight));
 }
-function addUpdated(parent, centered) {
-  if (!fetched.at) return;
-  const time = new Date(fetched.at).toLocaleTimeString('en-PH', {hour:'numeric', minute:'2-digit', timeZone:'Asia/Manila'});
-  parent.addSpacer(6);
-  const line = parent.addText(`${fetched.offline ? 'Offline' : 'Updated'} · ${time}`);
-  line.font = Font.mediumSystemFont(10);
-  line.textColor = Color.dynamic(new Color('8a8780'),new Color('8f8e8a'));
-  line.lineLimit = 1; line.minimumScaleFactor = 0.8;
-  if (centered) line.centerAlignText();
-}
 function buildWidget(card, image, s, family) {
   const w = new ListWidget();
   w.backgroundColor = Color.dynamic(new Color('f7f6f2'),new Color('1c1c1b'));
@@ -138,14 +120,13 @@ function buildWidget(card, image, s, family) {
   } else if (family === 'medium') {
     const row = w.addStack(); row.layoutHorizontally(); row.centerAlignContent();
     addLogo(row,image,88,76,false); if (image) row.addSpacer(18);
-    const text = row.addStack(); text.layoutVertically(); addName(text,card,20,false); addUpdated(text,false);
+    const text = row.addStack(); text.layoutVertically(); addName(text,card,20,false);
     row.addSpacer();
   } else {
     const large = family === 'large';
     addLogo(w,image,large?120:64,large?92:44,true);
     if (image) w.addSpacer(large?22:10);
     addName(w,card,large?25:16,true);
-    addUpdated(w,true);
   }
   w.addSpacer(); return w;
 }
