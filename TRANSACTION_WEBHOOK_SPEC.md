@@ -49,10 +49,31 @@ All values are strings; any may be empty.
 |---|---|
 | `raw` | The whole notification (title + body). Used to find the card and sent to the AI. Required (the `text` field is also accepted). Must be 1–2000 characters; missing or longer text returns `code: 400`. A merchant `note` alone is never classified as a charge. |
 | `timestamp` | ISO 8601 time of the purchase. Missing or invalid → now. |
-| `amount` | Commas and `₱` tolerated. Missing or invalid → the first PHP / ₱ / P amount in `raw`. |
+| `amount` | Commas and `₱` tolerated. Missing or invalid → the first PHP / ₱ / P amount in `raw`. Ignored for a foreign purchase (below). |
 | `last4` | Optional. Anything but exactly 4 digits counts as missing. |
 | `note` | Merchant. Empty → the card's name, like rows entered by hand. |
 | `app` | Optional. The notification's app, or for Apple Wallet its title (the card name). Used only to find the card; `title` is also accepted. |
+
+### Foreign currency
+
+If the first amount in `raw` is in another currency (`USD 12.50`, `12.50 HKD`,
+`US$9.99`, `€15`, `HK$100`, `¥1,200`; `$` alone is USD), it is converted to PHP
+and the **Amount column holds the PHP value**, so card totals, spend this cycle
+and the recommendation stay in one currency.
+
+The rate comes from the **FX Rates** tab, created on first use:
+
+| Currency | Market rate (PHP per 1) | Your rate (optional) | Last used |
+|---|---|---|---|
+| USD | `=GOOGLEFINANCE("CURRENCY:USDPHP")` | | |
+
+*Your rate*, when filled in (e.g. your bank's rate including its fee), wins over
+the market rate. A currency not listed yet gets its own row the first time it
+appears. With no usable rate the response is `code: 503, status: "no_rate"` and
+nothing is saved. The Transactions row also records **Currency**, **Original
+amount** and **PHP rate** (columns found by header, added on first use), and the
+`logged` response adds `currency`, `original_amount`, `rate` and `converted`
+(`"USD 12.50 = PHP 728.13"`).
 
 ### Row written to Transactions
 

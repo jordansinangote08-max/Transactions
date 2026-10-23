@@ -223,6 +223,48 @@ test('a leftover Cards row with the same name never ties with or beats the real 
   }
 });
 
+test('foreign purchases are converted to PHP with the FX Rates sheet; the original is kept', () => {
+  const app = setup();
+  const usd = 'EastWest: Your card ending 0123 was charged USD 12.50 at AMAZON. Purchase completed.';
+  // First use creates the FX Rates sheet with GOOGLEFINANCE formulas.
+  const first = app.post(body(usd, { amount: '', note: 'AMAZON' }));
+  assert.equal(first.status, 'no_rate');                 // the formula hasn't produced a number here
+  assert.equal(app.sheets.Transactions.rows.length, 1);  // nothing saved
+  const fx = app.sheets['FX Rates'].rows;
+  assert.deepEqual(fx[0], ['Currency', 'Market rate (PHP per 1)', 'Your rate (optional)', 'Last used']);
+  assert.equal(fx[1][0], 'USD');
+  assert.equal(fx[1][1], '=GOOGLEFINANCE("CURRENCY:USDPHP")');
+
+  fx[1][1] = 58.25;                                      // what GOOGLEFINANCE shows
+  const logged = app.post(body(usd, { amount: '5', note: 'AMAZON' }));   // the phone's PHP guess is ignored
+  assert.equal(logged.status, 'logged');
+  assert.equal(logged.amount, 728.13);
+  assert.equal(logged.converted, 'USD 12.50 = PHP 728.13');
+  const tx = app.sheets.Transactions.rows;
+  const col = name => tx[0].indexOf(name);
+  const row = tx.at(-1);
+  assert.equal(row[2], 728.13);
+  assert.deepEqual([row[col('Currency')], row[col('Original amount')], row[col('PHP rate')]], ['USD', 12.5, 58.25]);
+  assert.ok(fx[1][3] instanceof Date);
+
+  fx[1][2] = 59.5;                                       // Your rate wins
+  assert.equal(app.post(body(usd.replace('AMAZON', 'APPLE'), { amount: '', note: 'APPLE' })).amount, 743.75);
+
+  // A currency not listed yet gets its own row.
+  app.post(body('EastWest: Your card ending 0123 was charged CHF 20.00 at ZURICH SHOP. Purchase completed.', { amount: '', note: 'ZURICH SHOP' }));
+  assert.ok(fx.some(r => r[0] === 'CHF' && r[1] === '=GOOGLEFINANCE("CURRENCY:CHFPHP")'));
+});
+
+test('PHP purchases are unchanged and never touch the FX Rates sheet', () => {
+  const app = setup();
+  const result = app.post(body());
+  assert.equal(result.amount, 10);
+  assert.equal(result.converted, undefined);
+  assert.equal(app.sheets['FX Rates'], undefined);
+  assert.deepEqual(JSON.parse(JSON.stringify(app.ctx.moneyInText('Card ending 3002 USD 12.50 at Shop'))), { currency: 'USD', amount: 12.5 });
+  assert.equal(app.ctx.moneyInText('Your card ending 3002 was charged P 71.00 at SM'), null);
+});
+
 test('sync round-trips multiple endings and alias removal; one Cards row per card', () => {
   const app = setup();
   const sync = endings => app.ctx.syncCards({ payload: JSON.stringify([{ id: 'EW', name: 'EastWest', bank: 'EastWest', last4: '3002', last4s: endings }]) });
