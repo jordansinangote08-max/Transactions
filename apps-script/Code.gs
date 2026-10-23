@@ -275,7 +275,7 @@ function saveTransaction(amount, card, note, date, last4) {
  * from the caller it is looked up on the Cards sheet by card name. Callers hold
  * the script lock.
  */
-function appendTransaction(date, amount, card, note, last4) {
+function appendTransaction(date, amount, card, note, last4, foreign) {
   const sheet = getTransactionSheet();
   const name = cleanCard(card);
   const digits = last4Of(last4) || last4ForCardName(name);
@@ -285,6 +285,24 @@ function appendTransaction(date, amount, card, note, last4) {
   if (digits) {
     sheet.getRange(sheet.getLastRow(), getLast4Column(sheet)).setValue(digits);
   }
+  // A foreign purchase: Amount above is in PHP; keep what the bank charged too.
+  if (foreign) {
+    const row = sheet.getLastRow();
+    sheet.getRange(row, getHeaderColumn(sheet, "Currency")).setValue(foreign.currency);
+    sheet.getRange(row, getHeaderColumn(sheet, "Original amount")).setValue(foreign.amount);
+    sheet.getRange(row, getHeaderColumn(sheet, "PHP rate")).setValue(foreign.rate);
+  }
+}
+
+/** A column found by its header, added after the used columns if missing. */
+function getHeaderColumn(sheet, header) {
+  const width = Math.max(sheet.getLastColumn(), 1);
+  const headers = sheet.getRange(1, 1, 1, width).getValues()[0];
+  for (var i = 0; i < headers.length; i++) {
+    if (String(headers[i]).trim().toLowerCase() === header.toLowerCase()) return i + 1;
+  }
+  sheet.getRange(1, width + 1).setValue(header);
+  return width + 1;
 }
 
 /**
@@ -604,9 +622,22 @@ function handleWebhook(e) {
     return jsonResponse({ ok: true, code: 200, status: "ignored", reason: "No saved card in the notification." });
   }
 
-  // 2. The phone's amount, else the first amount in the notification.
-  const sent = parseAmount(body.amount);
-  const amount = Math.round((sent > 0 ? sent : amountFromText(raw)) * 100) / 100;
+  // 2. A foreign purchase (USD 10.00, HK$ 100) is converted to PHP with the
+  //    FX Rates sheet. Otherwise the phone's amount, else the first PHP amount.
+  const money = moneyInText(raw);
+  let amount, foreign = null;
+  if (money && money.currency !== "PHP") {
+    const rate = fxRate(money.currency);
+    if (!rate) {
+      return jsonResponse({ ok: false, code: 503, status: "no_rate", currency: money.currency,
+        error: "No PHP rate for " + money.currency + " in the FX Rates sheet yet; nothing was saved. Add one in its Your rate column." });
+    }
+    foreign = { currency: money.currency, amount: money.amount, rate: rate };
+    amount = Math.round(money.amount * rate * 100) / 100;
+  } else {
+    const sent = parseAmount(body.amount);
+    amount = Math.round((sent > 0 ? sent : amountFromText(raw)) * 100) / 100;
+  }
   if (!(amount > 0)) {
     return badRequest("amount must be a number greater than zero.");
   }
@@ -639,9 +670,16 @@ function handleWebhook(e) {
     }
 
     // Already under the lock, so append directly rather than via saveTransaction.
-    appendTransaction(date, amount, card.name, rowNote, matchedLast4(card, last4, raw));
+    appendTransaction(date, amount, card.name, rowNote, matchedLast4(card, last4, raw), foreign);
 
-    return jsonResponse({ ok: true, code: 201, status: "logged", card: card.name, amount: amount, note: rowNote });
+    const logged = { ok: true, code: 201, status: "logged", card: card.name, amount: amount, note: rowNote };
+    if (foreign) {
+      logged.currency = foreign.currency;
+      logged.original_amount = foreign.amount;
+      logged.rate = foreign.rate;
+      logged.converted = foreign.currency + " " + foreign.amount.toFixed(2) + " = PHP " + amount.toFixed(2);
+    }
+    return jsonResponse(logged);
   } catch (error) {
     // The message only — never the request, which carries the token.
     console.error("handleWebhook failed: " + error.message);
@@ -886,6 +924,95 @@ function explicitLast4s(text) {
 
 function compactName(value) {
   return String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+// ============================================================
+// FOREIGN CURRENCY (the "FX Rates" sheet)
+// ============================================================
+
+/**
+ * Foreign purchases are logged in PHP so card totals, spend this cycle and the
+ * recommendation stay in one currency. The "FX Rates" sheet, created on first
+ * use, holds one row per currency:
+ *
+ *   A Currency | B Market rate (PHP per 1) | C Your rate (optional) | D Last used
+ *
+ * B is =GOOGLEFINANCE("CURRENCY:USDPHP"), so it follows the market. Fill C with
+ * your bank's rate (fees included) to use it instead. A new currency gets its
+ * own row the first time it appears. The Transactions sheet keeps what the
+ * bank charged in its Currency, Original amount and PHP rate columns.
+ */
+const FX_SHEET = "FX Rates";
+const FX_HEADERS = ["Currency", "Market rate (PHP per 1)", "Your rate (optional)", "Last used"];
+const FX_STARTERS = ["USD", "HKD", "EUR", "GBP", "JPY", "SGD", "AUD", "CAD", "KRW", "CNY", "TWD", "THB", "MYR", "AED"];
+const CURRENCY_CODES = FX_STARTERS.concat(["CHF", "NZD", "IDR", "VND", "INR", "SAR", "QAR", "KWD", "BHD", "OMR", "MOP", "SEK", "NOK", "DKK", "PLN", "CZK", "HUF", "TRY", "ZAR", "MXN", "BRL", "ILS"]);
+// Written before the amount; "$" alone is read as USD.
+const CURRENCY_SYMBOLS = { "US$": "USD", "HK$": "HKD", "S$": "SGD", "SG$": "SGD", "A$": "AUD", "AU$": "AUD", "C$": "CAD", "CA$": "CAD",
+  "NT$": "TWD", "NZ$": "NZD", "€": "EUR", "£": "GBP", "¥": "JPY", "₩": "KRW", "฿": "THB", "RM": "MYR", "$": "USD" };
+
+function fxFormula(currency) {
+  return '=GOOGLEFINANCE("CURRENCY:' + currency + 'PHP")';
+}
+
+function getFxSheet() {
+  const book = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = book.getSheetByName(FX_SHEET);
+  if (!sheet) {
+    sheet = book.insertSheet(FX_SHEET);
+    sheet.appendRow(FX_HEADERS);
+    sheet.setFrozenRows(1);
+    FX_STARTERS.forEach(function (currency) { sheet.appendRow([currency, fxFormula(currency), "", ""]); });
+  }
+  return sheet;
+}
+
+/**
+ * The first amount in the notification and its currency: {currency, amount},
+ * or null. "USD 12.50", "12.50 USD", "US$12.50", "€9", "PHP 580.00", "₱580".
+ * "P 71.00" isn't read here; it stays on the PHP path below.
+ */
+function moneyInText(raw) {
+  const text = String(raw || "");
+  const number = "(\\d{1,3}(?:,\\d{3})+(?:\\.\\d+)?|\\d+(?:\\.\\d+)?)";
+  const codes = ["PHP"].concat(CURRENCY_CODES).join("|");
+  const symbols = Object.keys(CURRENCY_SYMBOLS).sort(function (a, b) { return b.length - a.length; })
+    .map(function (symbol) { return symbol.replace(/[$]/g, "\\$"); }).join("|");
+  const patterns = [
+    new RegExp("\\b(" + codes + ")\\s?" + number, "gi"),
+    // Amount first ("12.50 USD") needs cents, so "ending 3002 USD 12.50" can't read 3002.
+    new RegExp("(\\d{1,3}(?:,\\d{3})*\\.\\d{2}|\\d+\\.\\d{2})\\s?(" + codes + ")\\b", "gi"),
+    new RegExp("(" + symbols + "|₱)\\s?" + number, "g")
+  ];
+  let best = null;
+  patterns.forEach(function (pattern, kind) {
+    const m = pattern.exec(text);
+    if (!m || (best && best.index <= m.index)) return;
+    const label = kind === 1 ? m[2] : m[1];
+    const value = kind === 1 ? m[1] : m[2];
+    const currency = kind === 2 ? (label === "₱" ? "PHP" : CURRENCY_SYMBOLS[label]) : label.toUpperCase();
+    best = { index: m.index, currency: currency, amount: parseFloat(value.replace(/,/g, "")) };
+  });
+  return best && best.amount > 0 ? { currency: best.currency, amount: best.amount } : null;
+}
+
+/** PHP per 1 unit: "Your rate" when filled in, else the market rate. 0 when neither is usable. */
+function fxRate(currency) {
+  const sheet = getFxSheet();
+  const rows = sheet.getDataRange().getValues();
+  let row = 0;
+  for (var i = 1; i < rows.length; i++) {
+    if (String(rows[i][0]).trim().toUpperCase() === currency) row = i + 1;
+  }
+  if (!row) {
+    sheet.appendRow([currency, fxFormula(currency), "", ""]);
+    if (typeof SpreadsheetApp.flush === "function") SpreadsheetApp.flush();
+    row = sheet.getLastRow();
+  }
+  const values = sheet.getRange(row, 2, 1, 2).getValues()[0];
+  const mine = Number(values[1]), market = Number(values[0]);
+  const rate = values[1] !== "" && mine > 0 ? mine : market > 0 ? market : 0;
+  if (rate) sheet.getRange(row, 4).setValue(new Date());
+  return rate;
 }
 
 /** First amount after PHP / Php / ₱ / P in the text, or NaN. */
