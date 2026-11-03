@@ -1841,10 +1841,143 @@
       return {total,counted,skipped,salaryDate};
     }
 
+    // "Dashboard" tab published to the web as CSV (File > Share > Publish to web,
+    // pick the Dashboard tab, CSV). Its "TOTAL THIS CYCLE" cell is the figure shown here.
+    // Leave empty to fall back to adding up the Transactions tab.
+    const DASHBOARD_CSV_URL = "";
+    const CYCLE_TOTAL_KEY = "smartCardAdvisorCycleTotal_v1";
+
+    function parseSheetNumber(value){
+      const cleaned=String(value||"").replace(/[^0-9.\-]/g,"");
+      if(!cleaned||cleaned==="-"||cleaned===".") return null;
+      const n=Number(cleaned);
+      return Number.isFinite(n)?n:null;
+    }
+
+    /** Finds the "TOTAL THIS CYCLE" label on the Dashboard tab and returns the first
+     *  number to its right, or else the number directly below it. */
+    const DASHBOARD_BILLS_KEY = "smartCardAdvisorDashboardBills_v1";
+    let dashboardRequest=null,dashboardRequestAt=0;
+
+    /** One read of the Dashboard tab, shared by everything that needs it for 60s. */
+    function fetchDashboardRows(){
+      if(!DASHBOARD_CSV_URL) return Promise.reject(new Error("No Dashboard link set"));
+      if(dashboardRequest&&Date.now()-dashboardRequestAt<60000) return dashboardRequest;
+      const sep=DASHBOARD_CSV_URL.includes("?")?"&":"?";
+      dashboardRequestAt=Date.now();
+      dashboardRequest=fetch(`${DASHBOARD_CSV_URL}${sep}_=${Date.now()}`,{cache:"no-store",redirect:"follow"})
+        .then(response=>{
+          if(!response.ok) throw new Error(`Dashboard read failed: ${response.status}`);
+          return response.text();
+        })
+        .then(parseCsv)
+        .catch(error=>{dashboardRequest=null;throw error});
+      return dashboardRequest;
+    }
+
+    /** Reads the bank-by-bank table on the Dashboard tab: the header row with a
+     *  "Bill (₱)" column, then one row per bank until the table ends. */
+    function dashboardBillsFrom(rows){
+      const bills=[];
+      for(let r=0;r<rows.length;r++){
+        const billCol=rows[r].findIndex(cell=>/^\s*bill\b/i.test(cell));
+        if(billCol<0) continue;
+        let bankCol=rows[r].findIndex(cell=>/bank|card|issuer/i.test(cell));
+        if(bankCol<0||bankCol===billCol) bankCol=billCol===0?1:0;
+        for(let k=r+1;k<rows.length;k++){
+          const bank=String(rows[k][bankCol]||"").trim();
+          if(!bank) break;
+          if(/^total/i.test(bank)) continue;
+          const amount=parseSheetNumber(rows[k][billCol]);
+          if(amount!==null) bills.push({bank,amount});
+        }
+        if(bills.length) break;
+      }
+      if(!bills.length) throw new Error('No "Bill (₱)" table on the Dashboard tab');
+      return bills;
+    }
+
+    function cachedDashboardBills(){
+      try{return JSON.parse(localStorage.getItem(DASHBOARD_BILLS_KEY)||"null")}catch(error){return null}
+    }
+
+    async function fetchDashboardBills(){
+      const bills=dashboardBillsFrom(await fetchDashboardRows());
+      try{localStorage.setItem(DASHBOARD_BILLS_KEY,JSON.stringify(bills))}catch(error){}
+      return bills;
+    }
+
+    /** The Dashboard bill for a card: matched on the card's name or id, or when one
+     *  name contains the other ("UnionBank" ↔ "UnionBank Rewards"). */
+    function dashboardBillFor(card,bills){
+      if(!card||!Array.isArray(bills)) return null;
+      const norm=value=>String(value||"").toLowerCase().replace(/[^a-z0-9]/g,"");
+      const names=[norm(card.name),norm(card.id)].filter(Boolean);
+      const exact=bills.find(bill=>names.includes(norm(bill.bank)));
+      const loose=exact||bills.find(bill=>{
+        const bank=norm(bill.bank);
+        return bank&&names.some(name=>name.length>2&&(bank.includes(name)||name.includes(bank)));
+      });
+      return loose?loose.amount:null;
+    }
+
+    async function fetchDashboardCycleTotal(){
+      const rows=await fetchDashboardRows();
+      for(let r=0;r<rows.length;r++){
+        const c=rows[r].findIndex(cell=>/total\s+this\s+cycle/i.test(cell));
+        if(c<0) continue;
+        for(let k=c+1;k<rows[r].length;k++){
+          const n=parseSheetNumber(rows[r][k]);
+          if(n!==null) return n;
+        }
+        const inline=parseSheetNumber(rows[r][c].replace(/total\s+this\s+cycle/i,""));
+        if(inline!==null) return inline;
+        const below=rows[r+1]?parseSheetNumber(rows[r+1][c]):null;
+        if(below!==null) return below;
+      }
+      throw new Error('No "TOTAL THIS CYCLE" figure on the Dashboard tab');
+    }
+
+    function showCachedCycleTotal(){
+      try{
+        const cached=JSON.parse(localStorage.getItem(CYCLE_TOTAL_KEY)||"null");
+        if(cached&&typeof cached.total==="number"){
+          el.billsTotalValue.textContent=fmtMoney(cached.total);
+          el.billsTotalLabel.textContent="total this cycle · updating…";
+          return true;
+        }
+      }catch(error){}
+      return false;
+    }
+
     let billsTotalToken=0;
 
     async function refreshBillsTotal(){
       const token=++billsTotalToken;
+
+      if(DASHBOARD_CSV_URL){
+        const hadCache=showCachedCycleTotal();
+        if(!hadCache){
+          el.billsTotalValue.textContent="—";
+          el.billsTotalLabel.textContent="loading total this cycle…";
+        }
+        try{
+          const total=await fetchDashboardCycleTotal();
+          if(token!==billsTotalToken) return;
+          el.billsTotalValue.textContent=fmtMoney(total);
+          el.billsTotalLabel.textContent="total this cycle";
+          try{localStorage.setItem(CYCLE_TOTAL_KEY,JSON.stringify({total,at:Date.now()}))}catch(error){}
+          return;
+        }catch(error){
+          if(token!==billsTotalToken) return;
+          console.warn("Could not read the Dashboard total",error);
+          if(hadCache){
+            el.billsTotalLabel.textContent="total this cycle · last saved";
+            return;
+          }
+        }
+      }
+
       const salaryDate=nextSalaryDate();
 
       if(!salaryDate){
@@ -1944,9 +2077,14 @@
       // confident "₱0.00" and then snap to the real figure a second later. That reads
       // as the total flickering, and worse, ₱0.00 is a claim the app cannot support
       // yet. Show a placeholder until there is something real to show.
-      el.statementTotal.textContent = (pending && !items.length)
-        ? "—"
-        : `₱${total.toLocaleString("en-PH",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+      // The current cycle shows the Bill (₱) figure from the Dashboard tab, which is
+      // ready before the transaction rows are. Past cycles still add up their rows.
+      const isCurrent=dateKey(cycle.cycleEnd)===dateKey(cycleFor(card).cycleEnd);
+      const dashboardBill=isCurrent?dashboardBillFor(card,statementView.dashboardBills):null;
+      const peso=value=>`₱${Number(value).toLocaleString("en-PH",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+      el.statementTotal.textContent = dashboardBill!==null
+        ? peso(dashboardBill)
+        : (pending && !items.length) ? "—" : peso(total);
     }
 
     /** Swap in a new set of rows (local, then live), keeping the picked cycle. */
@@ -1977,7 +2115,7 @@
       const card=cardById(cardId);
       if(!card) return;
       const requestToken=++statementRequestToken;
-      statementView={card,rows:[],cycles:[],sourceNote:"",pending:true};
+      statementView={card,rows:[],cycles:[],sourceNote:"",pending:true,dashboardBills:cachedDashboardBills()};
       el.statementCycleSelect.innerHTML="";
 
       // Show something instantly from local data, then upgrade to the live
@@ -1987,6 +2125,14 @@
       revealOverlay(el.statementModal);
       el.statementModal.setAttribute("aria-hidden","false");
       document.body.classList.add("modal-open");
+
+      if(DASHBOARD_CSV_URL){
+        fetchDashboardBills().then(bills=>{
+          if(requestToken!==statementRequestToken) return;
+          statementView={...statementView,dashboardBills:bills};
+          renderStatement();
+        }).catch(error=>console.warn("Could not read Dashboard bills",error));
+      }
 
       try{
         const rows=await fetchStatementRows();
