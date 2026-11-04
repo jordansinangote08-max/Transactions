@@ -1049,7 +1049,10 @@ const AI_INSTRUCTION =
   "fund transfers (even outgoing), ads/promos/rewards, account notices, or ambiguous/incomplete text. " +
   "An amount or merchant alone is not proof of a charge. 'Confirm your PHP 10 purchase. Tap Yes' = N. " +
   "'Did you make a PHP 10 transaction?' = N. 'Your card was charged PHP 10 at Shop. Purchase completed.' = Y. " +
-  "A completed-purchase confirmation is Y; a request for confirmation before payment is N.";
+  "A completed-purchase confirmation is Y; a request for confirmation before payment is N. " +
+  "A bank reporting that your card transaction at a merchant IS approved (already done, no action asked) is Y, " +
+  "even with a 'call us if you don't recognize this' footer: 'Your transaction at GRAB on 11/04 1:08PM for PHP213.00 " +
+  "using your Card ending in xxxx4069 is approved. If you don't recognize this transaction, call 02' = Y.";
 
 /** true = a charge, false = not a charge, null = no usable answer. */
 function isChargeByAI(raw) {

@@ -265,6 +265,18 @@ test('PHP purchases are unchanged and never touch the FX Rates sheet', () => {
   assert.equal(app.ctx.moneyInText('Your card ending 3002 was charged P 71.00 at SM'), null);
 });
 
+test('RCBC "transaction … is approved" SMS reaches the AI check and is logged on RCBC', () => {
+  const app = setup();
+  app.sheets.Cards.rows.push(['RCBC', 'RCBC', '4069', 'RCBC Flex', 'app', new Date()]);
+  const raw = "RCBC Credit Your transaction at GRAB on 11/04 1:08PM for PHP213.00 using your Card ending in xxxx4069 is approved. If you don't recognize this transaction, call 02";
+  const result = app.post({ raw, amount: '213.00', last4: '4069', note: 'GRAB', app: 'RCBC Credit' });
+  assert.equal(result.status, 'logged');
+  assert.equal(result.card, 'RCBC Flex');
+  assert.equal(result.amount, 213);
+  assert.equal(app.calls(), 1);
+  assert.match(vm.runInContext('AI_INSTRUCTION', app.ctx), /IS approved .* = Y\./);
+});
+
 test('sync round-trips multiple endings and alias removal; one Cards row per card', () => {
   const app = setup();
   const sync = endings => app.ctx.syncCards({ payload: JSON.stringify([{ id: 'EW', name: 'EastWest', bank: 'EastWest', last4: '3002', last4s: endings }]) });
