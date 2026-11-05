@@ -152,6 +152,23 @@ test('normalizes merchant punctuation for duplicates, preserves unrelated same-p
   assert.equal(app.sheets.Transactions.rows.length, 3);
 });
 
+test('the same purchase from two sources (app + bank SMS) is logged once', () => {
+  const app = setup();
+  const rows = app.sheets.Transactions.rows;
+  const age = minutes => { rows.at(-1)[0] = new Date(Date.now() - minutes * 60 * 1000); };
+  const moveIt = 'Move It: Your ride was paid PHP 140.00 with Card ending 0123. Purchase completed.';
+  const sms = 'RCBC Credit Your transaction at MOVE IT prevent unauthorized tran for PHP140.00 using your Card ending in xxxx0123 is approved.';
+  assert.equal(app.post(body(moveIt, { amount: '140', note: 'Move It' })).status, 'logged');
+  age(4);                                                  // the SMS arrives 4 minutes later
+  assert.equal(app.post(body(sms, { amount: '140', note: 'MOVE IT prevent unauthorized tran' })).status, 'duplicate');
+  assert.equal(app.post(body(sms, { amount: '140', note: '' })).status, 'duplicate');   // no merchant
+  assert.equal(rows.length, 2);
+  assert.equal(app.post(body(moveIt.replace('140', '139'), { amount: '139', note: 'Move It' })).status, 'logged');  // other amount
+  age(11);                                                 // a later ride at the same price is real
+  rows[1][0] = new Date(Date.now() - 11 * 60 * 1000);
+  assert.equal(app.post(body(moveIt, { amount: '140', note: 'Move It' })).status, 'logged');
+});
+
 test('matches aliases and explicit endings, never amounts or ambiguous cards', () => {
   const { ctx } = setup();
   const cards = ctx.readCards();
