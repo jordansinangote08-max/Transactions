@@ -567,6 +567,9 @@ function toDateKey(date) {
 const CARDS_SHEET = "Cards";
 const CARDS_HEADERS = ["ID", "Bank", "Last4", "Name", "Source", "Created"];
 const DUPLICATE_WINDOW_MS = 2 * 60 * 1000;
+// The same purchase reported twice (e.g. the Move It app and the bank's SMS) can
+// arrive minutes apart and name the merchant differently.
+const RELATED_DUPLICATE_WINDOW_MS = 10 * 60 * 1000;
 
 function isJsonBody(e) {
   const post = e && e.postData;
@@ -745,25 +748,41 @@ function isValidToken(token) {
  * iOS can deliver one notification twice. The same card, amount, note and day
  * written within the last two minutes is taken to be that.
  */
+/**
+ * True when this card already has a row for the same amount on the same day,
+ * written moments ago, with the same merchant (within 2 minutes) or a related
+ * one (within 10 minutes): one name starting with the other ("Move It" /
+ * "MOVE IT prevent unauthorized tran"), the same first word, or no merchant on
+ * one side (the note falls back to the card's name). Clearly different
+ * merchants at the same price ("Shop" / "Other") are both kept.
+ */
 function isRecentDuplicate(amount, cardName, note, date) {
   const rows = getTransactionSheet().getDataRange().getValues();
-  const cutoff = Date.now() - DUPLICATE_WINDOW_MS;
+  const now = Date.now();
   const dateKey = toDateKey(date);
 
   for (var i = rows.length - 1; i >= 1 && i >= rows.length - 50; i--) {
     const row = rows[i];
-    if (!(row[0] instanceof Date) || row[0].getTime() < cutoff) continue;
+    if (!(row[0] instanceof Date) || row[0].getTime() < now - RELATED_DUPLICATE_WINDOW_MS) continue;
 
     if (toDateKey(new Date(row[1])) === dateKey &&
         Math.round(Number(row[2]) * 100) === Math.round(amount * 100) &&
-        cleanCard(row[3]).toLowerCase() === cardName.toLowerCase() &&
-        duplicateNote(row[4]) === duplicateNote(note)) {
-      return true;
+        cleanCard(row[3]).toLowerCase() === cardName.toLowerCase()) {
+      const same = duplicateNote(row[4]) === duplicateNote(note);
+      if (same && row[0].getTime() >= now - DUPLICATE_WINDOW_MS) return true;
+      if (same || relatedMerchants(row[4], note, cardName)) return true;
     }
   }
   return false;
 }
 
+function relatedMerchants(a, b, cardName) {
+  const x = duplicateNote(a), y = duplicateNote(b), card = duplicateNote(cardName);
+  if (!x || !y || x === card || y === card) return true;
+  if (Math.min(x.length, y.length) >= 3 && (x.indexOf(y) === 0 || y.indexOf(x) === 0)) return true;
+  const first = value => (String(value || "").toLowerCase().match(/[\p{L}\p{N}]+/u) || [""])[0];
+  return first(a).length >= 3 && first(a) === first(b);
+}
 
 function duplicateNote(value) {
   return String(value || "").toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
