@@ -790,6 +790,7 @@
           <div class="field">
             <label for="customDueMethod">How is the due date calculated?</label>
             <select id="customDueMethod">
+              <option value="fixed_same_month">A fixed day of the same month</option>
               <option value="fixed_next_month">A fixed day of the following month</option>
               <option value="calendar_days" selected>A number of calendar days after the statement</option>
               <option value="business_days">A number of business days after the statement</option>
@@ -1624,7 +1625,10 @@
 
     function updateDueValueLabel(){
       const method=el.customDueMethod.value;
-      if(method==="fixed_next_month"){
+      if(method==="fixed_same_month"){
+        el.customDueValueLabel.textContent="Day of the same month";
+        el.customDueValue.max="31";
+      }else if(method==="fixed_next_month"){
         el.customDueValueLabel.textContent="Day of the following month";
         el.customDueValue.max="31";
       }else if(method==="business_days"){

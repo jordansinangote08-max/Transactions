@@ -156,7 +156,16 @@ function calcCustomCard(card,date){
         original=>adjustBusinessDate(original,card.statementAdjust)
       );
       let originalDue;
-      if(card.dueMethod==="fixed_next_month"){
+      if(card.dueMethod==="fixed_same_month"){
+        // Statement on the 3rd, due on the 28th of that month. A due day that
+        // isn't after the statement (e.g. due 2nd, statement 3rd) means next month.
+        const fixedDay=month=>{
+          const lastDay=calendarDate(statement.getUTCFullYear(),month+1,0).getUTCDate();
+          return calendarDate(statement.getUTCFullYear(),month,Math.min(lastDay,Number(card.dueValue)));
+        };
+        originalDue=fixedDay(statement.getUTCMonth());
+        if(originalDue<=statement) originalDue=fixedDay(statement.getUTCMonth()+1);
+      }else if(card.dueMethod==="fixed_next_month"){
         const targetMonth=calendarDate(statement.getUTCFullYear(),statement.getUTCMonth()+1,1);
         const lastDay=calendarDate(targetMonth.getUTCFullYear(),targetMonth.getUTCMonth()+1,0).getUTCDate();
         originalDue=calendarDate(targetMonth.getUTCFullYear(),targetMonth.getUTCMonth(),Math.min(lastDay,Number(card.dueValue)));
